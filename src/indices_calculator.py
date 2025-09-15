@@ -24,7 +24,7 @@ class ClimateIndicesCalculator:
     def __init__(self, config: 'Config'):
         """
         Initialize the indices calculator.
-        
+
         Parameters:
         -----------
         config : Config
@@ -33,6 +33,12 @@ class ClimateIndicesCalculator:
         self.config = config
         self.indices_config = config.get('indices', {})
         self.results = {}
+
+        # Baseline period configuration
+        baseline_config = self.indices_config.get('baseline_period', {})
+        self.baseline_start = baseline_config.get('start', 1981)
+        self.baseline_end = baseline_config.get('end', 2010)
+        self.use_baseline = self.indices_config.get('use_baseline_for_percentiles', True)
         
     def calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -200,23 +206,25 @@ class ClimateIndicesCalculator:
         if tasmax is not None and tasmin is not None:
             if 'tx90p' in configured_indices or 'tx90p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile first
+                    # Calculate percentile using baseline period
+                    tx90_per = self._calculate_baseline_percentile(tasmax, 0.9)
                     tx90 = atmos.tx90p(
                         tasmax,
-                        tasmax_per=tasmax.quantile(0.9, dim='time'),
+                        tasmax_per=tx90_per,
                         freq='YS'
                     )
                     indices['tx90p'] = tx90
                     logger.info("Calculated warm days (TX90p)")
                 except Exception as e:
                     logger.error(f"Error calculating tx90p: {e}")
-            
+
             if 'tn10p' in configured_indices or 'tn10p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile first
+                    # Calculate percentile using baseline period
+                    tn10_per = self._calculate_baseline_percentile(tasmin, 0.1)
                     tn10 = atmos.tn10p(
                         tasmin,
-                        tasmin_per=tasmin.quantile(0.1, dim='time'),
+                        tasmin_per=tn10_per,
                         freq='YS'
                     )
                     indices['tn10p'] = tn10
@@ -321,20 +329,20 @@ class ClimateIndicesCalculator:
         # Very wet days (95th percentile)
         if 'r95p' in configured_indices:
             try:
-                # Calculate 95th percentile
-                pr_per = pr.quantile(0.95, dim='time')
+                # Calculate 95th percentile using baseline period
+                pr_per = self._calculate_baseline_percentile(pr, 0.95)
                 indices['r95ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
                 logger.info("Calculated very wet days (R95p)")
             except Exception as e:
                 logger.error(f"Error calculating r95p: {e}")
-        
+
         # Extremely wet days (99th percentile)
         if 'r99p' in configured_indices:
             try:
-                # Calculate 99th percentile
-                pr_per = pr.quantile(0.99, dim='time')
+                # Calculate 99th percentile using baseline period
+                pr_per = self._calculate_baseline_percentile(pr, 0.99)
                 indices['r99ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
@@ -401,18 +409,84 @@ class ClimateIndicesCalculator:
         
         return indices
     
-    def _get_variable(self, ds: xr.Dataset, 
+    def _get_baseline_data(self, data: xr.DataArray,
+                           start_year: Optional[int] = None,
+                           end_year: Optional[int] = None) -> xr.DataArray:
+        """
+        Extract baseline period for percentile calculations.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Input data array
+        start_year : int, optional
+            Start year of baseline period (default: from config)
+        end_year : int, optional
+            End year of baseline period (default: from config)
+
+        Returns:
+        --------
+        xr.DataArray
+            Data for baseline period
+        """
+        start = start_year or self.baseline_start
+        end = end_year or self.baseline_end
+
+        try:
+            baseline = data.sel(time=slice(str(start), str(end)))
+            if len(baseline.time) == 0:
+                logger.warning(f"No data found for baseline period {start}-{end}, using full period")
+                return data
+            logger.info(f"Using baseline period {start}-{end} with {len(baseline.time)} time steps")
+            return baseline
+        except Exception as e:
+            logger.warning(f"Error selecting baseline period: {e}, using full period")
+            return data
+
+    def _calculate_baseline_percentile(self, data: xr.DataArray,
+                                      percentile: float,
+                                      use_baseline: Optional[bool] = None) -> xr.DataArray:
+        """
+        Calculate percentile using baseline period or full period.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Input data array
+        percentile : float
+            Percentile to calculate (0-1)
+        use_baseline : bool, optional
+            Whether to use baseline period (default: from config)
+
+        Returns:
+        --------
+        xr.DataArray
+            Calculated percentile
+        """
+        use_baseline_flag = use_baseline if use_baseline is not None else self.use_baseline
+
+        if use_baseline_flag:
+            baseline_data = self._get_baseline_data(data)
+            percentile_value = baseline_data.quantile(percentile, dim='time')
+            logger.info(f"Calculated {percentile*100}th percentile using baseline period")
+        else:
+            percentile_value = data.quantile(percentile, dim='time')
+            logger.info(f"Calculated {percentile*100}th percentile using full period")
+
+        return percentile_value
+
+    def _get_variable(self, ds: xr.Dataset,
                      possible_names: List[str]) -> Optional[xr.DataArray]:
         """
         Find a variable in dataset by possible names.
-        
+
         Parameters:
         -----------
         ds : xr.Dataset
             Dataset to search
         possible_names : list
             List of possible variable names
-        
+
         Returns:
         --------
         xr.DataArray or None
