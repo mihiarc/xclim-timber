@@ -50,3 +50,9 @@ output:
   compression:
     complevel: 4
     engine: 'netcdf4'
+
+  # CSV output options
+  csv_formats:
+    long_format: true    # Each row = location-year combination
+    wide_format: true    # Each row = location, columns = index_year
+    historical_only: true # Only include years 1950-2014

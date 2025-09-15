@@ -163,14 +163,24 @@ calculator.save_indices('outputs/indices.nc')
 
 ```
 xclim-timber/
-├── src/
+├── src/                    # Core pipeline modules
 │   ├── config.py           # Configuration management
 │   ├── data_loader.py      # Data loading from various formats
 │   ├── preprocessor.py     # Data cleaning and standardization
 │   ├── indices_calculator.py # Climate indices calculation
 │   └── pipeline.py         # Main orchestration
+├── scripts/                # Processing and analysis scripts
+│   ├── csv_formatter.py    # CSV format converter (long ↔ wide)
+│   ├── efficient_extraction.py # Optimized point extraction
+│   ├── fast_point_extraction.py # Alternative extraction method
+│   └── visualize_temp.py   # Results visualization
+├── data/                   # Data files
+│   ├── test_data/          # Test datasets and coordinates
+│   └── sample_data/        # Sample data for development
 ├── outputs/                # Processed results
 ├── logs/                   # Processing logs
+├── docs/                   # Documentation
+├── benchmarks/             # Performance benchmarks
 └── requirements.txt        # Dependencies
 ```
 
@@ -195,6 +205,11 @@ python src/pipeline.py -c config.yaml -o /path/to/output
 
 # Process specific variables
 python src/pipeline.py -c config.yaml -v temperature -v precipitation
+
+4. **Format CSV outputs** (optional):
+```bash
+# Convert to both long and wide formats
+python scripts/csv_formatter.py --input-dir outputs --output-dir outputs/formatted
 ```
 
 ## Monitoring
