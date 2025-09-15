@@ -119,7 +119,18 @@ class ClimateIndicesCalculator:
         tas = self._get_variable(ds, ['tas', 'temperature', 'temp', 'tmean'])
         tasmax = self._get_variable(ds, ['tasmax', 'tmax', 'temperature_max', 'tasmax'])
         tasmin = self._get_variable(ds, ['tasmin', 'tmin', 'temperature_min', 'tasmin'])
-        
+
+        # Get target units from config (default to Celsius)
+        target_units = self.config.get('processing.temperature_units', 'degC')
+
+        # Ensure all temperature variables are in correct units
+        if tas is not None:
+            tas = self._ensure_temperature_units(tas, target_units)
+        if tasmax is not None:
+            tasmax = self._ensure_temperature_units(tasmax, target_units)
+        if tasmin is not None:
+            tasmin = self._ensure_temperature_units(tasmin, target_units)
+
         # If we only have mean temperature, use it for max/min as well
         if tas is not None and tasmax is None:
             tasmax = tas
@@ -529,6 +540,17 @@ class ClimateIndicesCalculator:
             tasmax = self._get_variable(temp_ds, ['tasmax', 'tmax', 'temperature_max'])
             tasmin = self._get_variable(temp_ds, ['tasmin', 'tmin', 'temperature_min'])
 
+            # Get target units from config (default to Celsius)
+            target_units = self.config.get('processing.temperature_units', 'degC')
+
+            # Ensure all temperature variables are in correct units
+            if tas is not None:
+                tas = self._ensure_temperature_units(tas, target_units)
+            if tasmax is not None:
+                tasmax = self._ensure_temperature_units(tasmax, target_units)
+            if tasmin is not None:
+                tasmin = self._ensure_temperature_units(tasmin, target_units)
+
         if hus is None and hurs is None:
             logger.warning("No humidity variables found in dataset")
             return indices
@@ -626,6 +648,13 @@ class ClimateIndicesCalculator:
         # Get variables
         tas = self._get_variable(temp_ds, ['tas', 'temperature', 'temp', 'tmean'])
         pr = self._get_variable(precip_ds, ['pr', 'precipitation', 'precip'])
+
+        # Get target units from config (default to Celsius)
+        target_units = self.config.get('processing.temperature_units', 'degC')
+
+        # Ensure temperature is in correct units
+        if tas is not None:
+            tas = self._ensure_temperature_units(tas, target_units)
         
         # Growing season length
         if 'gsl' in agricultural_indices and tas is not None:
@@ -791,6 +820,86 @@ class ClimateIndicesCalculator:
                     if self._validate_variable(var, name):
                         return var
         return None
+
+    def _infer_temperature_units(self, data: xr.DataArray) -> str:
+        """
+        Infer temperature units from data range.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Temperature data
+
+        Returns:
+        --------
+        str
+            Inferred units ('K', 'degC', or 'degF')
+        """
+        min_val = float(data.min())
+        max_val = float(data.max())
+
+        # Check for Kelvin (typical range: 200-350K)
+        if min_val > 200 and max_val < 350:
+            logger.info(f"Inferred temperature units as Kelvin (range: {min_val:.1f}-{max_val:.1f})")
+            return 'K'
+        # Check for Celsius (typical range: -80 to 60°C)
+        elif min_val > -100 and max_val < 60:
+            logger.info(f"Inferred temperature units as Celsius (range: {min_val:.1f}-{max_val:.1f})")
+            return 'degC'
+        # Check for Fahrenheit (typical range: -100 to 140°F)
+        elif min_val > -150 and max_val < 150:
+            logger.info(f"Inferred temperature units as Fahrenheit (range: {min_val:.1f}-{max_val:.1f})")
+            return 'degF'
+        else:
+            logger.warning(f"Cannot reliably infer temperature units from range: {min_val:.1f} to {max_val:.1f}")
+            # Default to Celsius if uncertain
+            return 'degC'
+
+    def _ensure_temperature_units(self, data: xr.DataArray, target_units: str = 'degC') -> xr.DataArray:
+        """
+        Ensure temperature data is in the correct units.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Temperature data
+        target_units : str
+            Target units ('degC', 'K', or 'degF'). Default is 'degC'.
+
+        Returns:
+        --------
+        xr.DataArray
+            Temperature data in target units
+        """
+        # Check if units attribute exists
+        current_units = data.attrs.get('units', '')
+
+        # Normalize unit strings for comparison
+        unit_mappings = {
+            'celsius': 'degC', 'deg_c': 'degC', 'c': 'degC', '°c': 'degC',
+            'kelvin': 'K', 'k': 'K',
+            'fahrenheit': 'degF', 'deg_f': 'degF', 'f': 'degF', '°f': 'degF'
+        }
+
+        current_units_normalized = unit_mappings.get(current_units.lower(), current_units)
+
+        # If no units specified, try to infer from data range
+        if not current_units_normalized:
+            current_units_normalized = self._infer_temperature_units(data)
+            data.attrs['units'] = current_units_normalized
+            logger.warning(f"No units attribute found for temperature data. Inferred: {current_units_normalized}")
+
+        # Convert if needed
+        if current_units_normalized != target_units:
+            try:
+                logger.info(f"Converting temperature from {current_units_normalized} to {target_units}")
+                data = convert_units_to(data, target_units)
+                logger.info(f"Successfully converted temperature units")
+            except Exception as e:
+                logger.error(f"Failed to convert temperature units: {e}")
+                logger.warning(f"Proceeding with original units, calculations may be incorrect")
+
+        return data
 
     def _validate_variable(self, var: xr.DataArray, expected_name: str) -> bool:
         """

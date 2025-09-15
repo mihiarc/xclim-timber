@@ -37,8 +37,19 @@ processing:
     threads_per_worker: 1
     memory_limit: '2GB'
   
-  # Target units for temperature
+  # Target units for temperature calculations
+  # Options: 'degC' (Celsius), 'K' (Kelvin), 'degF' (Fahrenheit)
+  # The pipeline will automatically convert input data to these units
   temperature_units: 'degC'
+
+  # Enable automatic unit conversion
+  # If True, the pipeline will attempt to convert temperature units automatically
+  auto_convert_units: true
+
+  # Strict unit checking
+  # If True, pipeline will fail if units cannot be determined
+  # If False, pipeline will log warnings and attempt to proceed
+  strict_units: false
 
 indices:
   # Baseline period for percentile calculations (WMO standard)
