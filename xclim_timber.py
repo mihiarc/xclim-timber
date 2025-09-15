@@ -183,19 +183,27 @@ def process_year(nc_file: str, parcels_csv: str, output_csv: str, year: int = No
         parcel_lons = parcel_lons.copy()
         parcel_lons[parcel_lons < 0] += 360
     
-    # Use vectorized nearest neighbor selection
+    # Use proper nearest neighbor selection
     logger.info("Extracting data at parcel locations (vectorized)")
-    
-    # Find nearest indices for all parcels at once
-    lat_indices = np.searchsorted(ds.lat.values, parcel_lats)
-    lat_indices = np.clip(lat_indices, 0, len(ds.lat) - 1)
-    
-    lon_indices = np.searchsorted(ds.lon.values, parcel_lons)
-    lon_indices = np.clip(lon_indices, 0, len(ds.lon) - 1)
-    
-    # Extract all data at once using advanced indexing
-    # This gets data for all parcels in one operation!
-    data = ds[variable].values[:, lat_indices, lon_indices]  # shape: (time, n_parcels)
+
+    # Find nearest indices using actual distance calculation
+    # This correctly handles irregular grids and finds true nearest neighbors
+    lat_indices = np.zeros(len(parcel_lats), dtype=int)
+    lon_indices = np.zeros(len(parcel_lons), dtype=int)
+
+    for i, (lat, lon) in enumerate(zip(parcel_lats, parcel_lons)):
+        # Find nearest latitude
+        lat_idx = np.abs(ds.lat.values - lat).argmin()
+        # Find nearest longitude
+        lon_idx = np.abs(ds.lon.values - lon).argmin()
+        lat_indices[i] = lat_idx
+        lon_indices[i] = lon_idx
+
+    # Extract data using xarray's isel for memory efficiency
+    # This avoids loading the entire dataset into memory
+    data_xr = ds[variable].isel(lat=xr.DataArray(lat_indices),
+                                lon=xr.DataArray(lon_indices))
+    data = data_xr.values  # shape: (time, n_parcels)
     
     # Transpose to get (n_parcels, time)
     data = data.T
@@ -282,8 +290,10 @@ def process_year(nc_file: str, parcels_csv: str, output_csv: str, year: int = No
         results[f'cdd_base{base}'] = np.nansum(cdd, axis=1)
 
     # =========== AGRICULTURAL INDICES ===========
-    # Corn growing degree days (base 10, cap 30)
-    corn_gdd = np.minimum(np.maximum(data - 10, 0), 20)  # Cap at 30-10=20
+    # Corn growing degree days (base 10, cap 30) - Fixed formula
+    # First cap temperature at 30°C, then calculate GDD
+    capped_temp = np.minimum(data, 30)
+    corn_gdd = np.maximum(capped_temp - 10, 0)
     results['corn_gdd'] = np.nansum(corn_gdd, axis=1)
 
     # Killing degree days (for pest/disease modeling)
@@ -298,8 +308,9 @@ def process_year(nc_file: str, parcels_csv: str, output_csv: str, year: int = No
 
     # =========== EXTREME TEMPERATURE INDICES ===========
     if include_extremes:
-        # Diurnal temperature range (simplified - would need min/max daily data)
-        results['mean_diurnal_range'] = np.nanstd(data, axis=1) * 2  # Approximation
+        # Note: Diurnal temperature range cannot be calculated from daily mean data
+        # Would require daily min/max temperature data
+        # Removing misleading approximation
 
         # Consecutive days indices
         results['max_consecutive_frost'] = calculate_consecutive_days(data, 0, 'less')
@@ -320,32 +331,30 @@ def process_year(nc_file: str, parcels_csv: str, output_csv: str, year: int = No
     # Drought stress days (>30°C)
     results['drought_stress_days'] = np.sum(data > 30, axis=1)
 
-    # Freeze-thaw cycles (crosses 0°C)
+    # Freeze-thaw cycles (crosses 0°C) - Fixed to count actual 0°C crossings
     freeze_thaw = np.zeros(data.shape[0])
     for i in range(data.shape[0]):
-        transitions = np.diff(np.sign(data[i]))
-        freeze_thaw[i] = np.sum(np.abs(transitions) > 0) / 2
+        # Check where temperature crosses 0°C
+        above_zero = data[i] > 0
+        # Count transitions from below to above zero and vice versa
+        transitions = np.diff(above_zero.astype(int))
+        freeze_thaw[i] = np.sum(np.abs(transitions))
     results['freeze_thaw_cycles'] = freeze_thaw
 
     # =========== BIOCLIMATIC INDICES ===========
-    # Mean temperature of warmest month (simplified - using warmest 30 days)
-    warmest_30days = np.zeros(data.shape[0])
-    for i in range(data.shape[0]):
-        if len(data[i]) >= 30:
-            sorted_temps = np.sort(data[i])[-30:]
-            warmest_30days[i] = np.mean(sorted_temps)
-    results['bio5_max_temp_warmest_month'] = warmest_30days
+    # Bioclimatic variables - Note: Simplified versions, not full BIOCLIM standard
+    # For proper BIOCLIM, need monthly aggregation which requires date information
+    # Mean temperature of warmest period (using 95th percentile as proxy)
+    results['bio5_max_temp_warmest_period'] = np.nanpercentile(data, 95, axis=1)
 
-    # Mean temperature of coldest month (simplified - using coldest 30 days)
-    coldest_30days = np.zeros(data.shape[0])
-    for i in range(data.shape[0]):
-        if len(data[i]) >= 30:
-            sorted_temps = np.sort(data[i])[:30]
-            coldest_30days[i] = np.mean(sorted_temps)
-    results['bio6_min_temp_coldest_month'] = coldest_30days
+    # Mean temperature of coldest period (using 5th percentile as proxy)
+    results['bio6_min_temp_coldest_period'] = np.nanpercentile(data, 5, axis=1)
 
-    # Temperature seasonality (standard deviation * 100)
-    results['bio4_temp_seasonality'] = np.nanstd(data, axis=1) * 100
+    # Temperature seasonality (coefficient of variation)
+    # Standard deviation / mean * 100
+    mean_temp = np.nanmean(data, axis=1)
+    std_temp = np.nanstd(data, axis=1)
+    results['bio4_temp_seasonality'] = (std_temp / (mean_temp + 273.15)) * 100  # Add 273.15 to avoid division issues
     
     # Save results
     results.to_csv(output_csv, index=False)
