@@ -142,7 +142,8 @@ class ClimateIndicesCalculator:
             # Mean temperature
             if 'tg_mean' in configured_indices:
                 try:
-                    indices['tg_mean'] = atmos.tg_mean(tas, freq='YS')
+                    result = atmos.tg_mean(tas, freq='YS')
+                    indices['tg_mean'] = self._convert_output_to_celsius(result)
                     logger.info("Calculated mean temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tg_mean: {e}")
@@ -151,7 +152,8 @@ class ClimateIndicesCalculator:
             # Maximum temperature
             if 'tx_max' in configured_indices:
                 try:
-                    indices['tx_max'] = atmos.tx_max(tasmax, freq='YS')
+                    result = atmos.tx_max(tasmax, freq='YS')
+                    indices['tx_max'] = self._convert_output_to_celsius(result)
                     logger.info("Calculated maximum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tx_max: {e}")
@@ -176,7 +178,8 @@ class ClimateIndicesCalculator:
             # Minimum temperature
             if 'tn_min' in configured_indices:
                 try:
-                    indices['tn_min'] = atmos.tn_min(tasmin, freq='YS')
+                    result = atmos.tn_min(tasmin, freq='YS')
+                    indices['tn_min'] = self._convert_output_to_celsius(result)
                     logger.info("Calculated minimum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tn_min: {e}")
@@ -232,18 +235,20 @@ class ClimateIndicesCalculator:
         if tasmax is not None and tasmin is not None:
             if 'daily_temperature_range' in configured_indices:
                 try:
-                    indices['daily_temperature_range'] = atmos.daily_temperature_range(
+                    result = atmos.daily_temperature_range(
                         tasmin, tasmax, freq='YS'
                     )
+                    indices['daily_temperature_range'] = self._convert_output_to_celsius(result)
                     logger.info("Calculated daily temperature range")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range: {e}")
 
             if 'daily_temperature_range_variability' in configured_indices:
                 try:
-                    indices['daily_temperature_range_variability'] = atmos.daily_temperature_range_variability(
+                    result = atmos.daily_temperature_range_variability(
                         tasmin, tasmax, freq='YS'
                     )
+                    indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result)
                     logger.info("Calculated daily temperature range variability")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range_variability: {e}")
@@ -900,6 +905,34 @@ class ClimateIndicesCalculator:
                 logger.warning(f"Proceeding with original units, calculations may be incorrect")
 
         return data
+
+    def _convert_output_to_celsius(self, result: xr.DataArray) -> xr.DataArray:
+        """
+        Convert temperature-like outputs from Kelvin to Celsius.
+
+        Parameters:
+        -----------
+        result : xr.DataArray
+            Result data array (potentially in Kelvin)
+
+        Returns:
+        --------
+        xr.DataArray
+            Result converted to Celsius if it was in Kelvin
+        """
+        if result is None:
+            return None
+
+        # Check if result has Kelvin units (xclim default output)
+        result_units = result.attrs.get('units', '')
+        if result_units == 'K':
+            try:
+                result = convert_units_to(result, 'degC')
+                logger.debug(f"Converted output from Kelvin to Celsius")
+            except Exception as e:
+                logger.warning(f"Could not convert output units: {e}")
+
+        return result
 
     def _validate_variable(self, var: xr.DataArray, expected_name: str) -> bool:
         """
