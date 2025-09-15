@@ -53,6 +53,22 @@ python xclim_timber.py \
     --output-dir outputs
 ```
 
+### CSV Output Formatting (Optional)
+
+Convert climate indices to different formats for analysis:
+
+```bash
+# Convert to both long and wide formats
+python csv_formatter.py --input-dir outputs --output-dir formatted
+
+# Specify historical period
+python csv_formatter.py --start-year 1950 --end-year 2014 --input-dir outputs
+```
+
+**Output Formats:**
+- **Long format**: Each row = location-year (time series analysis)
+- **Wide format**: Each row = location, columns = index_year (spatial analysis)
+
 ## Input Format
 
 ### Parcel Coordinates CSV
