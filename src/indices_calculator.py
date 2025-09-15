@@ -24,7 +24,7 @@ class ClimateIndicesCalculator:
     def __init__(self, config: 'Config'):
         """
         Initialize the indices calculator.
-        
+
         Parameters:
         -----------
         config : Config
@@ -33,6 +33,9 @@ class ClimateIndicesCalculator:
         self.config = config
         self.indices_config = config.get('indices', {})
         self.results = {}
+        # Add caching for performance optimization
+        self._percentile_cache = {}
+        self._pressure_array = None
         
     def calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -269,13 +272,13 @@ class ClimateIndicesCalculator:
         if tasmax is not None and tasmin is not None:
             if 'tx90p' in configured_indices or 'tx90p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile first
-                    tx90 = atmos.tx90p(
+                    # Use cached percentile calculation
+                    tx90_per = self._get_cached_percentile(tasmax, 0.9)
+                    indices['tx90p'] = atmos.tx90p(
                         tasmax,
-                        tasmax_per=tasmax.quantile(0.9, dim='time'),
+                        tasmax_per=tx90_per,
                         freq='YS'
                     )
-                    indices['tx90p'] = tx90
                     logger.info("Calculated warm days (TX90p)")
                 except Exception as e:
                     logger.error(f"Error calculating tx90p: {e}")
@@ -503,12 +506,12 @@ class ClimateIndicesCalculator:
                 # Assume standard pressure if not available
                 ps = self._get_variable(ds, ['ps', 'pressure', 'surface_pressure'])
                 if ps is None:
-                    # Create constant pressure array (standard atmospheric pressure)
-                    ps = xr.full_like(hus, 101325)  # Pa
-                    ps.attrs['units'] = 'Pa'
+                    # Use cached pressure array for efficiency
+                    ps = self._get_or_create_pressure_array(hus)
 
-                indices['dewpoint_temperature'] = atmos.relative_humidity_from_dewpoint(
-                    hus, ps, method='sonntag90'
+                # FIXED: Use correct function to calculate dewpoint FROM specific humidity
+                indices['dewpoint_temperature'] = atmos.dewpoint_from_specific_humidity(
+                    huss=hus, ps=ps, method='sonntag90'
                 )
                 logger.info("Calculated dewpoint temperature")
             except Exception as e:
@@ -680,6 +683,51 @@ class ClimateIndicesCalculator:
         
         return indices
     
+    def _get_cached_percentile(self, data: xr.DataArray, percentile: float, dim: str = 'time') -> xr.DataArray:
+        """
+        Get cached percentile calculation to avoid redundant computations.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Data to calculate percentile from
+        percentile : float
+            Percentile value (0-1)
+        dim : str
+            Dimension to calculate percentile along
+
+        Returns:
+        --------
+        xr.DataArray
+            Cached percentile result
+        """
+        # Create a unique cache key based on data variable name and percentile
+        cache_key = f"{data.name}_{percentile}_{dim}"
+
+        if cache_key not in self._percentile_cache:
+            self._percentile_cache[cache_key] = data.quantile(percentile, dim=dim)
+
+        return self._percentile_cache[cache_key]
+
+    def _get_or_create_pressure_array(self, template: xr.DataArray) -> xr.DataArray:
+        """
+        Get or create a standard pressure array, reusing if already created.
+
+        Parameters:
+        -----------
+        template : xr.DataArray
+            Template array for shape and coordinates
+
+        Returns:
+        --------
+        xr.DataArray
+            Pressure array
+        """
+        if self._pressure_array is None:
+            self._pressure_array = xr.full_like(template, 101325, dtype=np.float32)
+            self._pressure_array.attrs['units'] = 'Pa'
+        return self._pressure_array
+
     def _get_variable(self, ds: xr.Dataset,
                      possible_names: List[str]) -> Optional[xr.DataArray]:
         """
@@ -764,9 +812,13 @@ class ClimateIndicesCalculator:
                 if 'hurs' in expected_name.lower():  # Relative humidity (0-100%)
                     if min_val < 0 or max_val > 100:
                         logger.warning(f"Relative humidity variable {var.name} outside 0-100% range: {min_val:.1f}-{max_val:.1f}")
-                elif 'hus' in expected_name.lower():  # Specific humidity (typically 0-0.03 kg/kg)
-                    if min_val < 0 or max_val > 0.1:
+                elif 'hus' in expected_name.lower():  # Specific humidity (typically 0-0.04 kg/kg)
+                    if min_val < 0 or max_val > 0.04:
                         logger.warning(f"Specific humidity variable {var.name} outside typical range: {min_val:.4f}-{max_val:.4f}")
+                        # Values above 0.04 kg/kg are physically unrealistic at Earth's surface
+                        if max_val > 0.05:
+                            logger.error(f"Specific humidity values exceed physical limits: {max_val:.4f} kg/kg")
+                            return False
 
             # Check for excessive missing values
             if hasattr(var, 'isnull'):
