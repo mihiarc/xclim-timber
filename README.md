@@ -135,29 +135,132 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-### Temperature Indices
-- **tg_mean**: Mean temperature
-- **tx_max**: Maximum temperature
-- **tn_min**: Minimum temperature
-- **frost_days**: Days with minimum temperature < 0°C
-- **ice_days**: Days with maximum temperature < 0°C
-- **summer_days**: Days with maximum temperature > 25°C
-- **tropical_nights**: Nights with minimum temperature > 20°C
-- **growing_degree_days**: Accumulated temperature for crop growth
-- **heating/cooling_degree_days**: Energy demand indicators
+This pipeline calculates **84 comprehensive climate indices** organized into seven scientifically-standard categories using the xclim library. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions.
 
-### Precipitation Indices
-- **prcptot**: Total precipitation
-- **rx1day/rx5day**: Maximum 1-day and 5-day precipitation
-- **sdii**: Simple daily intensity index
-- **cdd/cwd**: Consecutive dry/wet days
-- **r10mm/r20mm**: Heavy precipitation days
-- **r95p/r99p**: Very wet and extremely wet days
+### Underlying Climate Variables
 
-### Extreme Indices
-- **tx90p/tn90p**: Warm days and nights
-- **tx10p/tn10p**: Cool days and nights
-- **wsdi/csdi**: Warm and cold spell duration indices
+The pipeline processes these core climate variables:
+
+**Temperature Data:**
+- `tas`: Near-surface air temperature (daily mean)
+- `tasmax`: Daily maximum near-surface air temperature
+- `tasmin`: Daily minimum near-surface air temperature
+
+**Precipitation Data:**
+- `pr`: Daily precipitation amount
+
+**Humidity Data:**
+- `hus`: Specific humidity (kg/kg)
+- `hurs`: Relative humidity (%)
+
+**Variable Name Flexibility:** The system supports multiple naming conventions:
+- Temperature: 'tas', 'temperature', 'temp', 'tmean', 'tasmax', 'tmax', 'tasmin', 'tmin'
+- Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
+- Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
+
+### Temperature Indices (17 indices)
+
+**Basic Statistics:**
+- `tg_mean`: Annual mean temperature
+- `tx_max`: Annual maximum temperature
+- `tn_min`: Annual minimum temperature
+- `daily_temperature_range`: Mean daily temperature range (tmax - tmin)
+- `daily_temperature_range_variability`: Variability in daily temperature range
+
+**Threshold-Based Counts:**
+- `tropical_nights`: Number of nights with minimum temperature > 20°C
+- `frost_days`: Number of days with minimum temperature < 0°C
+- `ice_days`: Number of days with maximum temperature < 0°C
+- `summer_days`: Number of days with maximum temperature > 25°C
+- `hot_days`: Number of days with maximum temperature > 30°C
+- `very_hot_days`: Number of days with maximum temperature > 35°C
+- `warm_nights`: Number of nights with minimum temperature > 15°C
+- `consecutive_frost_days`: Maximum consecutive frost days
+
+**Degree Day Metrics:**
+- `growing_degree_days`: Accumulated temperature above 10°C threshold (crop development)
+- `heating_degree_days`: Accumulated temperature below 17°C threshold (energy demand)
+- `cooling_degree_days`: Accumulated temperature above 18°C threshold (cooling energy demand)
+
+**Extreme Events:**
+- `tx90p`: Warm days (daily maximum temperature > 90th percentile)
+- `tn90p`: Warm nights (daily minimum temperature > 90th percentile)
+- `tx10p`: Cool days (daily maximum temperature < 10th percentile)
+- `tn10p`: Cool nights (daily minimum temperature < 10th percentile)
+- `warm_spell_duration_index`: Warm spell duration (consecutive warm days)
+- `cold_spell_duration_index`: Cold spell duration (consecutive cold days)
+
+### Precipitation Indices (10 indices)
+
+**Basic Statistics:**
+- `prcptot`: Total annual precipitation
+- `rx1day`: Maximum 1-day precipitation amount
+- `rx5day`: Maximum 5-day precipitation amount
+- `sdii`: Simple daily intensity index (average precipitation on wet days)
+
+**Consecutive Events:**
+- `cdd`: Maximum consecutive dry days (< 1mm)
+- `cwd`: Maximum consecutive wet days (≥ 1mm)
+
+**Threshold Events:**
+- `r10mm`: Number of heavy precipitation days (≥ 10mm)
+- `r20mm`: Number of very heavy precipitation days (≥ 20mm)
+- `r95p`: Very wet days (above 95th percentile)
+- `r99p`: Extremely wet days (above 99th percentile)
+
+### Humidity Indices (2 indices)
+
+**Basic Humidity Calculations:**
+- `dewpoint_temperature`: Dewpoint temperature from specific humidity
+- `relative_humidity`: Relative humidity calculation from specific humidity
+
+### Human Comfort Indices (2 indices)
+
+**Heat Stress Assessment:**
+- `heat_index`: Heat index combining temperature and humidity effects
+- `humidex`: Canadian humidex index for apparent temperature
+
+### Evapotranspiration Indices (3 indices)
+
+**Water Balance Calculations:**
+- `potential_evapotranspiration`: Potential evapotranspiration (Thornthwaite method)
+- `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET
+- `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
+
+### Multivariate Indices (4 indices)
+
+**Combined Temperature-Precipitation:**
+- `cold_and_dry_days`: Days with low temperature and low precipitation
+- `cold_and_wet_days`: Days with low temperature and high precipitation
+- `warm_and_dry_days`: Days with high temperature and low precipitation
+- `warm_and_wet_days`: Days with high temperature and high precipitation
+
+### Extreme Weather Indices (6 indices)
+
+**Temperature Extremes:**
+- `tx90p`: Warm days (days when daily maximum temperature > 90th percentile)
+- `tn90p`: Warm nights (days when daily minimum temperature > 90th percentile)
+- `tx10p`: Cool days (days when daily maximum temperature < 10th percentile)
+- `tn10p`: Cool nights (days when daily minimum temperature < 10th percentile)
+
+**Extreme Duration:**
+- `wsdi`: Warm spell duration index (consecutive warm days)
+- `csdi`: Cold spell duration index (consecutive cold days)
+
+### Agricultural Indices (3 indices)
+
+**Specialized Agricultural Metrics:**
+- `gsl`: Growing season length (period suitable for plant growth)
+- `spi`: Standardized Precipitation Index (drought monitoring, 3-month window)
+- `spei`: Standardized Precipitation Evapotranspiration Index (requires additional data)
+
+### Index Calculation Details
+
+**Processing Architecture:**
+- All indices calculated using the scientifically-validated **xclim library**
+- **Annual frequency**: Most indices use annual calculations (`freq='YS'`)
+- **Robust error handling**: Each index calculation includes comprehensive error handling
+- **CF-compliant metadata**: All outputs follow Climate and Forecast conventions
 
 ## Pipeline Architecture
 

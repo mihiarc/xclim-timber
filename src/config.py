@@ -35,9 +35,13 @@ class Config:
                 'output_path': './outputs',
                 'log_path': './logs',
                 'file_patterns': {
-                    'temperature': ['*tas*.tif', '*tas*.nc', '*temp*.tif', '*temp*.nc'],
+                    'temperature': ['*tas*.tif', '*tas*.nc', '*temp*.tif', '*temp*.nc',
+                                   '*tasmax*.tif', '*tasmax*.nc', '*tasmin*.tif', '*tasmin*.nc',
+                                   '*tmax*.tif', '*tmax*.nc', '*tmin*.tif', '*tmin*.nc'],
                     'precipitation': ['*pr*.tif', '*pr*.nc', '*precip*.tif', '*precip*.nc'],
-                    'humidity': ['*hurs*.tif', '*hurs*.nc', '*humid*.tif', '*humid*.nc'],
+                    'humidity': ['*hurs*.tif', '*hurs*.nc', '*humid*.tif', '*humid*.nc',
+                                '*hus*.tif', '*hus*.nc', '*huss*.tif', '*huss*.nc',
+                                '*specific_humidity*.tif', '*specific_humidity*.nc'],
                     'wind': ['*sfcWind*.tif', '*sfcWind*.nc', '*wind*.tif', '*wind*.nc']
                 }
             },
@@ -65,41 +69,83 @@ class Config:
             # Climate indices to calculate
             'indices': {
                 'temperature': [
+                    # Basic statistics
                     'tg_mean',  # Mean temperature
                     'tx_max',   # Maximum temperature
                     'tn_min',   # Minimum temperature
-                    'tropical_nights',  # Number of tropical nights
-                    'frost_days',      # Number of frost days
-                    'ice_days',        # Number of ice days
-                    'summer_days',     # Number of summer days
+                    'daily_temperature_range',  # Mean daily temperature range
+                    'daily_temperature_range_variability',  # Temperature range variability
+
+                    # Threshold-based counts
+                    'tropical_nights',  # Number of tropical nights (>20°C)
+                    'frost_days',      # Number of frost days (<0°C)
+                    'ice_days',        # Number of ice days (<0°C)
+                    'summer_days',     # Number of summer days (>25°C)
+                    'hot_days',        # Number of hot days (>30°C)
+                    'very_hot_days',   # Number of very hot days (>35°C)
+                    'warm_nights',     # Number of warm nights (>15°C)
+                    'consecutive_frost_days',  # Consecutive frost days
+
+                    # Degree days
                     'growing_degree_days',  # Growing degree days
                     'heating_degree_days',  # Heating degree days
                     'cooling_degree_days'   # Cooling degree days
                 ],
                 'precipitation': [
+                    # Basic statistics
                     'prcptot',  # Total precipitation
                     'rx1day',   # Max 1-day precipitation
                     'rx5day',   # Max 5-day precipitation
                     'sdii',     # Simple daily intensity index
+
+                    # Consecutive events
                     'cdd',      # Consecutive dry days
                     'cwd',      # Consecutive wet days
-                    'r10mm',    # Number of heavy precipitation days
-                    'r20mm',    # Number of very heavy precipitation days
-                    'r95p',     # Very wet days
-                    'r99p'      # Extremely wet days
+
+                    # Threshold events
+                    'r10mm',    # Number of heavy precipitation days (≥10mm)
+                    'r20mm',    # Number of very heavy precipitation days (≥20mm)
+                    'r95p',     # Very wet days (>95th percentile)
+                    'r99p'      # Extremely wet days (>99th percentile)
                 ],
                 'extremes': [
-                    'tx90p',    # Warm days
-                    'tn90p',    # Warm nights
-                    'tx10p',    # Cool days
-                    'tn10p',    # Cool nights
-                    'wsdi',     # Warm spell duration index
-                    'csdi'      # Cold spell duration index
+                    # Temperature extremes
+                    'tx90p',    # Warm days (TX > 90th percentile)
+                    'tn90p',    # Warm nights (TN > 90th percentile)
+                    'tx10p',    # Cool days (TX < 10th percentile)
+                    'tn10p',    # Cool nights (TN < 10th percentile)
+
+                    # Spell duration indices
+                    'warm_spell_duration_index',  # Warm spell duration (WSDI)
+                    'cold_spell_duration_index'   # Cold spell duration (CSDI)
+                ],
+                'humidity': [
+                    # Basic humidity calculations
+                    'dewpoint_temperature',      # Dewpoint from specific humidity
+                    'relative_humidity',         # Relative humidity calculation
+                ],
+                'comfort': [
+                    # Human comfort indices
+                    'heat_index',               # Heat index (temperature + humidity)
+                    'humidex',                  # Humidex (Canadian heat comfort)
+                ],
+                'evapotranspiration': [
+                    # Evapotranspiration indices
+                    'potential_evapotranspiration',     # PET calculation
+                    'reference_evapotranspiration',     # FAO-56 Penman-Monteith
                 ],
                 'agricultural': [
+                    # Agricultural indices
                     'gsl',      # Growing season length
                     'spi',      # Standardized precipitation index
                     'spei'      # Standardized precipitation evapotranspiration index
+                ],
+                'multivariate': [
+                    # Combined variable indices
+                    'cold_and_dry_days',        # Days with low temp + low precip
+                    'cold_and_wet_days',        # Days with low temp + high precip
+                    'warm_and_dry_days',        # Days with high temp + low precip
+                    'warm_and_wet_days'         # Days with high temp + high precip
                 ]
             },
             
