@@ -1,0 +1,52 @@
+# Simple configuration for annual mean temperature calculation
+# Edit the input_path to point to your external drive
+
+data:
+  # Path to your external drive with climate data
+  input_path: /media/external_drive/climate_data
+  
+  # Output directory for results
+  output_path: ./outputs
+  
+  # Log directory
+  log_path: ./logs
+  
+  # File patterns for temperature data
+  # Add patterns that match your temperature files
+  file_patterns:
+    temperature:
+      - '*temperature*.nc'
+      - '*temp*.nc'
+      - '*tas*.nc'
+      - '*t2m*.nc'
+      - '*tmean*.nc'
+      - '*temperature*.tif'
+      - '*temp*.tif'
+      - '*tas*.tif'
+
+processing:
+  # Chunk sizes for processing large files
+  chunk_size:
+    time: 365  # Process one year at a time
+    lat: 100
+    lon: 100
+  
+  # Dask configuration for parallel processing
+  dask:
+    n_workers: 2  # Start with fewer workers for testing
+    threads_per_worker: 1
+    memory_limit: '2GB'
+  
+  # Target units for temperature
+  temperature_units: 'degC'
+
+indices:
+  # Just calculate annual mean for now
+  temperature:
+    - annual_mean
+
+output:
+  format: 'netcdf'  # or 'geotiff'
+  compression:
+    complevel: 4
+    engine: 'netcdf4'
