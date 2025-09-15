@@ -41,6 +41,12 @@ processing:
   temperature_units: 'degC'
 
 indices:
+  # Baseline period for percentile calculations (WMO standard)
+  baseline_period:
+    start: 1971
+    end: 2000
+  use_baseline_for_percentiles: true
+
   # Just calculate annual mean for now
   temperature:
     - annual_mean

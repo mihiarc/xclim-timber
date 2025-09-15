@@ -68,6 +68,12 @@ class Config:
             
             # Climate indices to calculate
             'indices': {
+                # Baseline period for percentile calculations
+                'baseline_period': {
+                    'start': 1971,  # WMO standard baseline start
+                    'end': 2000,    # WMO standard baseline end
+                },
+                'use_baseline_for_percentiles': True,  # Use baseline for percentile indices
                 'temperature': [
                     # Basic statistics
                     'tg_mean',  # Mean temperature
