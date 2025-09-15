@@ -36,9 +36,15 @@ class ClimateIndicesCalculator:
 
         # Baseline period configuration
         baseline_config = self.indices_config.get('baseline_period', {})
-        self.baseline_start = baseline_config.get('start', 1981)
-        self.baseline_end = baseline_config.get('end', 2010)
+        self.baseline_start = baseline_config.get('start', 1971)  # Fixed: aligned with documentation
+        self.baseline_end = baseline_config.get('end', 2000)      # Fixed: aligned with documentation
         self.use_baseline = self.indices_config.get('use_baseline_for_percentiles', True)
+
+        # Validate baseline configuration
+        if self.baseline_start >= self.baseline_end:
+            raise ValueError(f"Invalid baseline period: start year ({self.baseline_start}) must be before end year ({self.baseline_end})")
+        if self.baseline_end - self.baseline_start < 10:
+            logger.warning(f"Short baseline period ({self.baseline_end - self.baseline_start} years). WMO recommends at least 30 years.")
         
     def calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -436,11 +442,22 @@ class ClimateIndicesCalculator:
             baseline = data.sel(time=slice(str(start), str(end)))
             if len(baseline.time) == 0:
                 logger.warning(f"No data found for baseline period {start}-{end}, using full period")
+                logger.warning("Results may not be comparable with standard climate assessments")
                 return data
-            logger.info(f"Using baseline period {start}-{end} with {len(baseline.time)} time steps")
+
+            # Check data sufficiency (at least 80% coverage recommended)
+            total_expected_days = (end - start + 1) * 365
+            actual_days = len(baseline.time)
+            coverage = actual_days / total_expected_days
+
+            if coverage < 0.8:
+                logger.warning(f"Insufficient baseline data coverage: {coverage:.1%} (recommended: >80%)")
+
+            logger.info(f"Using baseline period {start}-{end} with {len(baseline.time)} time steps ({coverage:.1%} coverage)")
             return baseline
         except Exception as e:
-            logger.warning(f"Error selecting baseline period: {e}, using full period")
+            logger.error(f"Error selecting baseline period: {e}")
+            logger.warning("Falling back to full period - results not WMO-compliant")
             return data
 
     def _calculate_baseline_percentile(self, data: xr.DataArray,
@@ -448,6 +465,10 @@ class ClimateIndicesCalculator:
                                       use_baseline: Optional[bool] = None) -> xr.DataArray:
         """
         Calculate percentile using baseline period or full period.
+
+        NOTE: This is a simplified implementation. For full WMO compliance,
+        use xclim's percentile_doy() with bootstrap methodology for day-of-year
+        specific percentiles.
 
         Parameters:
         -----------

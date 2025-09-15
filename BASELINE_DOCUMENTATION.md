@@ -2,7 +2,7 @@
 
 ## Overview
 
-The xclim-timber pipeline now supports configurable baseline periods for percentile-based climate indices, ensuring compliance with WMO (World Meteorological Organization) standards and enabling accurate climate change signal detection.
+The xclim-timber pipeline now supports configurable baseline periods for percentile-based climate indices, providing a foundation for climate change signal detection. This is a simplified implementation suitable for many use cases, with known limitations documented below.
 
 ## Background
 
@@ -148,10 +148,27 @@ For existing pipelines:
    - Baseline extraction is optimized and adds minimal overhead
    - Uses lazy evaluation with xarray/dask
 
+## Known Limitations
+
+This implementation provides basic baseline functionality with the following limitations:
+
+1. **Simplified Percentile Calculation**: Uses simple quantiles instead of WMO's bootstrap methodology with day-of-year specific percentiles. This may lead to:
+   - Slight overestimation of extreme frequencies in the baseline period
+   - Missing seasonal variations in threshold values
+   - Results that differ from strict WMO/ETCCDI implementations
+
+2. **Single Threshold Values**: Calculates one percentile value for the entire period rather than 365 daily values, which may affect seasonal extreme detection accuracy.
+
+3. **No Bootstrap Resampling**: Does not implement the bootstrap procedure recommended for avoiding inhomogeneities between in-base and out-of-base periods.
+
+For applications requiring strict WMO compliance, consider using xclim's `percentile_doy()` function directly with bootstrap methodology.
+
 ## Future Enhancements
 
 Potential improvements under consideration:
+- Full WMO-compliant bootstrap methodology with day-of-year percentiles
 - Support for multiple baseline periods for comparison
 - Automatic baseline period detection based on data availability
 - Integration with CMIP6 standard baseline periods
-- Baseline period validation and quality checks
+- Enhanced validation and quality checks
+- Performance optimization with caching
