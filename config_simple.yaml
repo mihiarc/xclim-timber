@@ -41,9 +41,22 @@ processing:
   temperature_units: 'degC'
 
 indices:
-  # Just calculate annual mean for now
+  # Baseline period configuration (WMO standard: 1971-2000)
+  baseline_period:
+    start: 1971
+    end: 2000
+  use_baseline_for_percentiles: true
+
+  # Temperature indices to calculate
   temperature:
     - annual_mean
+    - tx90p  # Warm days
+    - tn10p  # Cool nights
+
+  # Precipitation indices
+  precipitation:
+    - r95p   # Very wet days
+    - r99p   # Extremely wet days
 
 output:
   format: 'netcdf'  # or 'geotiff'

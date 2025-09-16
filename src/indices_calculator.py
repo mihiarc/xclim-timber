@@ -24,7 +24,7 @@ class ClimateIndicesCalculator:
     def __init__(self, config: 'Config'):
         """
         Initialize the indices calculator.
-        
+
         Parameters:
         -----------
         config : Config
@@ -33,6 +33,18 @@ class ClimateIndicesCalculator:
         self.config = config
         self.indices_config = config.get('indices', {})
         self.results = {}
+
+        # Baseline period configuration for percentile calculations
+        baseline_config = self.indices_config.get('baseline_period', {})
+        self.baseline_start = baseline_config.get('start', 1971)
+        self.baseline_end = baseline_config.get('end', 2000)
+        self.use_baseline = self.indices_config.get('use_baseline_for_percentiles', True)
+
+        # Validate baseline configuration
+        if self.baseline_start >= self.baseline_end:
+            raise ValueError(f"Invalid baseline period: start year ({self.baseline_start}) must be before end year ({self.baseline_end})")
+        if self.baseline_end - self.baseline_start < 10:
+            logger.warning(f"Short baseline period ({self.baseline_end - self.baseline_start} years). WMO recommends at least 30 years.")
         
     def calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -200,10 +212,15 @@ class ClimateIndicesCalculator:
         if tasmax is not None and tasmin is not None:
             if 'tx90p' in configured_indices or 'tx90p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile first
+                    # Calculate percentile using baseline period if configured
+                    if self.use_baseline:
+                        tx90_per = self._calculate_baseline_percentile(tasmax, 0.9)
+                    else:
+                        tx90_per = tasmax.quantile(0.9, dim='time')
+
                     tx90 = atmos.tx90p(
                         tasmax,
-                        tasmax_per=tasmax.quantile(0.9, dim='time'),
+                        tasmax_per=tx90_per,
                         freq='YS'
                     )
                     indices['tx90p'] = tx90
@@ -213,10 +230,15 @@ class ClimateIndicesCalculator:
             
             if 'tn10p' in configured_indices or 'tn10p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile first
+                    # Calculate percentile using baseline period if configured
+                    if self.use_baseline:
+                        tn10_per = self._calculate_baseline_percentile(tasmin, 0.1)
+                    else:
+                        tn10_per = tasmin.quantile(0.1, dim='time')
+
                     tn10 = atmos.tn10p(
                         tasmin,
-                        tasmin_per=tasmin.quantile(0.1, dim='time'),
+                        tasmin_per=tn10_per,
                         freq='YS'
                     )
                     indices['tn10p'] = tn10
@@ -321,8 +343,11 @@ class ClimateIndicesCalculator:
         # Very wet days (95th percentile)
         if 'r95p' in configured_indices:
             try:
-                # Calculate 95th percentile
-                pr_per = pr.quantile(0.95, dim='time')
+                # Calculate 95th percentile using baseline period if configured
+                if self.use_baseline:
+                    pr_per = self._calculate_baseline_percentile(pr, 0.95)
+                else:
+                    pr_per = pr.quantile(0.95, dim='time')
                 indices['r95ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
@@ -333,8 +358,11 @@ class ClimateIndicesCalculator:
         # Extremely wet days (99th percentile)
         if 'r99p' in configured_indices:
             try:
-                # Calculate 99th percentile
-                pr_per = pr.quantile(0.99, dim='time')
+                # Calculate 99th percentile using baseline period if configured
+                if self.use_baseline:
+                    pr_per = self._calculate_baseline_percentile(pr, 0.99)
+                else:
+                    pr_per = pr.quantile(0.99, dim='time')
                 indices['r99ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
@@ -427,6 +455,58 @@ class ClimateIndicesCalculator:
                     return ds[var]
         return None
     
+    def _get_baseline_data(self, data: xr.DataArray) -> xr.DataArray:
+        """Extract baseline period data for percentile calculation.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Full time series data
+
+        Returns:
+        --------
+        xr.DataArray
+            Data subset for baseline period
+        """
+        if not self.use_baseline:
+            return data
+
+        # Extract baseline period
+        baseline_data = data.sel(
+            time=slice(f"{self.baseline_start}-01-01", f"{self.baseline_end}-12-31")
+        )
+
+        # Check data coverage
+        coverage = baseline_data.count(dim='time') / len(baseline_data.time)
+        if coverage.min() < 0.8:
+            logger.warning(
+                f"Baseline period has low data coverage (min: {coverage.min():.1%}). "
+                f"Results may not be representative."
+            )
+
+        return baseline_data
+
+    def _calculate_baseline_percentile(self, data: xr.DataArray, percentile: float) -> xr.DataArray:
+        """Calculate percentile from baseline period.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Full time series data
+        percentile : float
+            Percentile to calculate (0-1)
+
+        Returns:
+        --------
+        xr.DataArray
+            Percentile threshold from baseline period
+        """
+        if not self.use_baseline:
+            return data.quantile(percentile, dim='time')
+
+        baseline_data = self._get_baseline_data(data)
+        return baseline_data.quantile(percentile, dim='time')
+
     def save_indices(self, output_path: str, format: str = 'netcdf'):
         """
         Save calculated indices to file.
