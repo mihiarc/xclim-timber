@@ -10,9 +10,8 @@ import warnings
 
 import xarray as xr
 import rioxarray as rxr
-import dask.array as da
-from dask.distributed import Client, as_completed
 import numpy as np
+from tqdm import tqdm
 
 
 logger = logging.getLogger(__name__)
@@ -21,19 +20,16 @@ logger = logging.getLogger(__name__)
 class ClimateDataLoader:
     """Load and manage climate raster data from various formats."""
     
-    def __init__(self, config: 'Config', client: Optional[Client] = None):
+    def __init__(self, config: 'Config'):
         """
         Initialize the data loader.
-        
+
         Parameters:
         -----------
         config : Config
             Configuration object
-        client : Client, optional
-            Dask client for parallel processing
         """
         self.config = config
-        self.client = client
         self.datasets = {}
         
     def scan_directory(self, path: Union[str, Path], 
@@ -132,10 +128,10 @@ class ClimateDataLoader:
         logger.info(f"Loading NetCDF: {filepath}")
         
         try:
-            # Determine chunks
+            # Use auto chunking for memory efficiency
             if chunks is None:
-                chunks = self.config.chunk_sizes
-            
+                chunks = 'auto'
+
             # Open with xarray
             ds = xr.open_dataset(filepath, chunks=chunks, engine='netcdf4')
             
@@ -206,18 +202,16 @@ class ClimateDataLoader:
         
         logger.info(f"Loading {len(filepaths)} files")
         
-        # Load files in parallel if client is available
-        if self.client:
-            futures = []
-            for filepath in filepaths:
-                future = self.client.submit(self.load_file, filepath, chunks)
-                futures.append(future)
-            
-            datasets = []
-            for future in as_completed(futures):
-                datasets.append(future.result())
-        else:
-            datasets = [self.load_file(fp, chunks) for fp in filepaths]
+        # Load files sequentially
+        datasets = []
+        for filepath in tqdm(filepaths, desc="Loading files"):
+            try:
+                ds = self.load_file(filepath, chunks)
+                if ds is not None:
+                    datasets.append(ds)
+            except Exception as e:
+                logger.warning(f"Failed to load {filepath}: {e}")
+                continue
         
         # Concatenate datasets
         if len(datasets) == 1:

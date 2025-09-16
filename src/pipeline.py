@@ -14,7 +14,6 @@ import traceback
 
 import click
 import yaml
-from dask.distributed import Client, as_completed
 from tqdm import tqdm
 import xarray as xr
 
@@ -66,7 +65,7 @@ class ClimateDataPipeline:
     def __init__(self, config_path: Optional[str] = None, verbose: bool = False):
         """
         Initialize the pipeline.
-        
+
         Parameters:
         -----------
         config_path : str, optional
@@ -76,52 +75,36 @@ class ClimateDataPipeline:
         """
         self.config = Config(config_path)
         self.verbose = verbose
-        self.client = None
         self.datasets = {}
         self.processed_datasets = {}
         self.indices = {}
-        
+
         # Setup logging
         log_file = setup_logging(self.config.log_path, verbose)
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Pipeline initialized. Log file: {log_file}")
-        
+
         # Validate configuration
         if not self.config.validate():
             raise ValueError("Configuration validation failed")
     
-    def setup_dask(self):
-        """Setup Dask client for parallel processing."""
-        dask_config = self.config.dask_config
-        
-        self.logger.info("Setting up Dask client")
-        self.client = Client(
-            n_workers=dask_config.get('n_workers', 4),
-            threads_per_worker=dask_config.get('threads_per_worker', 2),
-            memory_limit=dask_config.get('memory_limit', '4GB'),
-            dashboard_address=dask_config.get('dashboard_address', ':8787')
-        )
-        
-        self.logger.info(f"Dask dashboard available at: {self.client.dashboard_link}")
-        return self.client
-    
     def load_data(self, variables: Optional[List[str]] = None) -> Dict[str, xr.Dataset]:
         """
         Load climate data from external drive.
-        
+
         Parameters:
         -----------
         variables : list, optional
             List of variables to load (default: all configured)
-        
+
         Returns:
         --------
         dict
             Dictionary of loaded datasets
         """
         self.logger.info("=== Data Loading Phase ===")
-        
-        loader = ClimateDataLoader(self.config, self.client)
+
+        loader = ClimateDataLoader(self.config)
         
         if variables is None:
             variables = list(self.config.get('data.file_patterns', {}).keys())
@@ -275,9 +258,6 @@ class ClimateDataPipeline:
         start_time = datetime.now()
         
         try:
-            # Setup Dask
-            self.setup_dask()
-            
             # Load data
             self.load_data(variables)
             
@@ -309,10 +289,8 @@ class ClimateDataPipeline:
             raise
         
         finally:
-            # Cleanup
-            if self.client:
-                self.client.close()
-                self.logger.info("Dask client closed")
+            # Cleanup (no dask client to close)
+            pass
     
     def get_status(self) -> Dict:
         """
@@ -327,11 +305,9 @@ class ClimateDataPipeline:
             'datasets_loaded': list(self.datasets.keys()),
             'datasets_processed': list(self.processed_datasets.keys()),
             'indices_calculated': list(self.indices.keys()),
-            'dask_workers': len(self.client.workers()) if self.client else 0,
             'config': {
                 'input_path': str(self.config.input_path),
                 'output_path': str(self.config.output_path),
-                'chunk_sizes': self.config.chunk_sizes
             }
         }
 
