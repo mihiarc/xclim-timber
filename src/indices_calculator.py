@@ -143,7 +143,7 @@ class ClimateIndicesCalculator:
             if 'tg_mean' in configured_indices:
                 try:
                     result = atmos.tg_mean(tas, freq='YS')
-                    indices['tg_mean'] = self._convert_output_to_celsius(result)
+                    indices['tg_mean'] = self._convert_output_to_celsius(result, 'tg_mean')
                     logger.info("Calculated mean temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tg_mean: {e}")
@@ -153,7 +153,7 @@ class ClimateIndicesCalculator:
             if 'tx_max' in configured_indices:
                 try:
                     result = atmos.tx_max(tasmax, freq='YS')
-                    indices['tx_max'] = self._convert_output_to_celsius(result)
+                    indices['tx_max'] = self._convert_output_to_celsius(result, 'tx_max')
                     logger.info("Calculated maximum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tx_max: {e}")
@@ -179,7 +179,7 @@ class ClimateIndicesCalculator:
             if 'tn_min' in configured_indices:
                 try:
                     result = atmos.tn_min(tasmin, freq='YS')
-                    indices['tn_min'] = self._convert_output_to_celsius(result)
+                    indices['tn_min'] = self._convert_output_to_celsius(result, 'tn_min')
                     logger.info("Calculated minimum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tn_min: {e}")
@@ -238,7 +238,7 @@ class ClimateIndicesCalculator:
                     result = atmos.daily_temperature_range(
                         tasmin, tasmax, freq='YS'
                     )
-                    indices['daily_temperature_range'] = self._convert_output_to_celsius(result)
+                    indices['daily_temperature_range'] = self._convert_output_to_celsius(result, 'daily_temperature_range')
                     logger.info("Calculated daily temperature range")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range: {e}")
@@ -248,7 +248,7 @@ class ClimateIndicesCalculator:
                     result = atmos.daily_temperature_range_variability(
                         tasmin, tasmax, freq='YS'
                     )
-                    indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result)
+                    indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result, 'daily_temperature_range_variability')
                     logger.info("Calculated daily temperature range variability")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range_variability: {e}")
@@ -906,31 +906,49 @@ class ClimateIndicesCalculator:
 
         return data
 
-    def _convert_output_to_celsius(self, result: xr.DataArray) -> xr.DataArray:
+    def _convert_output_to_celsius(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
         """
-        Convert temperature-like outputs from Kelvin to Celsius.
+        Convert temperature outputs from Kelvin to Celsius, handling absolute temperatures vs differences correctly.
 
         Parameters:
         -----------
         result : xr.DataArray
             Result data array (potentially in Kelvin)
+        index_name : str
+            Name of the climate index (used to determine conversion type)
 
         Returns:
         --------
         xr.DataArray
-            Result converted to Celsius if it was in Kelvin
+            Result converted appropriately for Celsius output
         """
         if result is None:
             return None
 
         # Check if result has Kelvin units (xclim default output)
         result_units = result.attrs.get('units', '')
-        if result_units == 'K':
-            try:
+        if result_units != 'K':
+            return result
+
+        try:
+            # Temperature differences: same numerical value, just change units label
+            # These represent differences in temperature, not absolute temperatures
+            temperature_difference_indices = {
+                'daily_temperature_range',
+                'daily_temperature_range_variability'
+            }
+
+            if index_name in temperature_difference_indices:
+                # For temperature differences, 1K = 1°C, so just change the units label
+                result.attrs['units'] = 'degC'
+                logger.debug(f"Changed units label for temperature difference {index_name}: K -> °C")
+            else:
+                # For absolute temperatures, apply full conversion (subtract 273.15)
                 result = convert_units_to(result, 'degC')
-                logger.debug(f"Converted output from Kelvin to Celsius")
-            except Exception as e:
-                logger.warning(f"Could not convert output units: {e}")
+                logger.debug(f"Converted absolute temperature {index_name} from Kelvin to Celsius")
+
+        except Exception as e:
+            logger.warning(f"Could not convert output units for {index_name}: {e}")
 
         return result
 
