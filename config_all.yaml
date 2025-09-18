@@ -1,0 +1,285 @@
+# Comprehensive configuration for all 84 climate indices
+# NorESM2-LM Climate Model Data Processing Pipeline
+#
+# This configuration enables calculation of all available climate indices
+# using the scientifically-validated xclim library following WMO standards
+
+data:
+  # Path to NorESM2-LM data on external drive
+  input_path: /media/mihiarc/SSD4TB/data/NorESM2-LM
+
+  # Output directory for results
+  output_path: ./outputs/comprehensive
+
+  # Log directory
+  log_path: ./logs
+
+  # Optimized file patterns for NorESM2-LM dataset
+  # Pattern: {variable}_day_NorESM2-LM_{scenario}_r1i1p1f1_gn_{year}.nc
+  file_patterns:
+    # Temperature variables (mean, max, min)
+    temperature:
+      - 'tas/historical/tas_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+      - 'tasmax/historical/tasmax_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+      - 'tasmin/historical/tasmin_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+
+    # Precipitation
+    precipitation:
+      - 'pr/historical/pr_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+
+    # Relative humidity
+    humidity:
+      - 'hurs/historical/hurs_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+
+    # Surface wind speed
+    wind:
+      - 'sfcWind/historical/sfcWind_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
+
+processing:
+  # Processing settings - simplified without dask
+  # Temporal resampling (keep daily for accurate indices calculation)
+  resampling:
+    temporal: 'D'  # Daily frequency maintained
+    spatial_resolution: null  # Keep native resolution
+
+  # Temperature processing settings
+  temperature_units: 'degC'   # Target units for all temperature calculations
+  auto_convert_units: true    # Enable automatic unit conversion
+  strict_units: false         # Log warnings but continue processing
+
+  # Coordinate reference system
+  crs: 'EPSG:4326'  # Geographic coordinate system
+
+  # Memory management
+  max_files_per_batch: 10     # Process files in batches to manage memory
+
+indices:
+  # WMO Standard baseline period for percentile calculations
+  baseline_period:
+    start: 1971  # WMO climate normal start
+    end: 2000    # WMO climate normal end
+  use_baseline_for_percentiles: true  # Use 30-year baseline for robust percentiles
+
+  # TEMPERATURE INDICES (30+ indices)
+  # Basic temperature statistics and derived metrics
+  temperature:
+    # Basic Statistics
+    - tg_mean                              # Annual mean temperature
+    - tx_max                               # Annual maximum temperature
+    - tn_min                               # Annual minimum temperature
+    - daily_temperature_range              # Mean daily temperature range
+    - daily_temperature_range_variability  # Temperature range variability
+
+    # Additional Temperature Statistics
+    - tg_max                               # Maximum of daily mean temperature
+    - tg_min                               # Minimum of daily mean temperature
+    - tn_max                               # Maximum of daily minimum temperature
+    - tx_min                               # Minimum of daily maximum temperature
+    - dtr                                  # Mean diurnal temperature range
+
+    # Threshold-Based Counts (agricultural/comfort indices)
+    - tropical_nights      # Nights with Tmin > 20°C (sleep comfort)
+    - frost_days          # Days with Tmin < 0°C (crop damage risk)
+    - ice_days            # Days with Tmax < 0°C (severe cold)
+    - summer_days         # Days with Tmax > 25°C (warm weather)
+    - hot_days            # Days with Tmax > 30°C (heat stress)
+    - very_hot_days       # Days with Tmax > 35°C (extreme heat)
+    - warm_nights         # Nights with Tmin > 15°C (energy demand)
+    - consecutive_frost_days  # Maximum consecutive frost period
+
+    # Additional Threshold Indices
+    - tn_days_below_0c     # Days with min temp below 0°C
+    - tx_days_above_0c     # Days with max temp above 0°C
+    - tn_days_above_20c    # Days with min temp above 20°C
+    - tx_days_above_25c    # Days with max temp above 25°C
+    - tx_days_above_30c    # Days with max temp above 30°C
+    - tx_days_above_35c    # Days with max temp above 35°C
+    - freeze_thaw_cycles   # Number of freeze-thaw cycles
+
+    # Degree Day Metrics (energy/agricultural applications)
+    - growing_degree_days   # Accumulated warmth for crop growth (base 10°C)
+    - heating_degree_days   # Energy demand for heating (base 17°C)
+    - cooling_degree_days   # Energy demand for cooling (base 18°C)
+    - thawing_degree_days   # Accumulated temperature above 0°C
+    - fresno_hours         # Hours above temperature thresholds
+
+  # PRECIPITATION INDICES (20+ indices)
+  # Water availability, intensity, and extreme events
+  precipitation:
+    # Basic Statistics
+    - prcptot  # Total annual precipitation (water availability)
+    - rx1day   # Maximum 1-day precipitation (flash flood risk)
+    - rx5day   # Maximum 5-day precipitation (flood risk)
+    - sdii     # Simple daily intensity index (average wet day intensity)
+
+    # Additional Precipitation Statistics
+    - rx3day   # Maximum 3-day precipitation
+    - rr1      # Number of wet days (≥ 1mm)
+    - rr5mm    # Days with precipitation ≥ 5mm
+    - wet_days # Number of wet days
+    - dry_days # Number of dry days
+
+    # Consecutive Events (drought/flood patterns)
+    - cdd      # Maximum consecutive dry days (drought duration)
+    - cwd      # Maximum consecutive wet days (flood potential)
+    - cdd_normal # Consecutive dry days normalized by climate
+    - cwd_normal # Consecutive wet days normalized by climate
+
+    # Threshold Events (impact-based indices)
+    - r10mm    # Heavy precipitation days ≥10mm (moderate events)
+    - r20mm    # Very heavy precipitation days ≥20mm (severe events)
+    - r25mm    # Very heavy precipitation days ≥25mm
+    - r30mm    # Extreme precipitation days ≥30mm
+    - r50mm    # Extreme precipitation days ≥50mm
+    - r75mm    # Extreme precipitation days ≥75mm
+    - r95p     # Very wet days >95th percentile (extreme wetness)
+    - r99p     # Extremely wet days >99th percentile (rare extremes)
+
+    # Intensity and Variability Indices
+    - precipitation_ww_days    # Very wet days
+    - max_pr_intensity        # Maximum precipitation intensity
+    - mean_pr_intensity       # Mean precipitation intensity
+    - pr_variability         # Precipitation variability
+
+  # EXTREME WEATHER INDICES (12+ indices)
+  # Temperature extremes and duration-based events
+  extremes:
+    # Temperature Extremes (percentile-based)
+    - tx90p    # Warm days: daily max temp > 90th percentile
+    - tn90p    # Warm nights: daily min temp > 90th percentile
+    - tx10p    # Cool days: daily max temp < 10th percentile
+    - tn10p    # Cool nights: daily min temp < 10th percentile
+
+    # Additional Percentile Extremes
+    - tx95p    # Very warm days: daily max temp > 95th percentile
+    - tn95p    # Very warm nights: daily min temp > 95th percentile
+    - tx05p    # Very cool days: daily max temp < 5th percentile
+    - tn05p    # Very cool nights: daily min temp < 5th percentile
+
+    # Duration-Based Extremes
+    - warm_spell_duration_index  # Consecutive periods of warm weather
+    - cold_spell_duration_index  # Consecutive periods of cold weather
+    - heat_wave_frequency       # Number of heat wave events
+    - heat_wave_duration        # Total heat wave duration
+    - cold_wave_frequency       # Number of cold wave events
+    - cold_wave_duration        # Total cold wave duration
+
+  # HUMIDITY INDICES (2 indices)
+  # Atmospheric moisture content calculations
+  humidity:
+    - dewpoint_temperature  # Dewpoint from relative humidity
+    - relative_humidity     # Relative humidity validation/processing
+
+  # HUMAN COMFORT INDICES (2 indices)
+  # Heat stress and apparent temperature for public health
+  comfort:
+    - heat_index   # Heat index combining temperature and humidity
+    - humidex      # Canadian humidex (apparent temperature)
+
+  # EVAPOTRANSPIRATION INDICES (3 indices)
+  # Water balance and agricultural water demand
+  evapotranspiration:
+    - potential_evapotranspiration   # PET using Thornthwaite method
+    - reference_evapotranspiration   # FAO-56 Penman-Monteith reference ET
+    - spei_3                        # 3-month Standardized Precipitation-ET Index
+
+  # AGRICULTURAL INDICES (3 indices)
+  # Specialized indices for crop planning and drought monitoring
+  agricultural:
+    - gsl      # Growing season length (frost-free period)
+    - spi_3    # 3-month Standardized Precipitation Index (drought)
+    - spei     # Standardized Precipitation Evapotranspiration Index
+
+  # WIND INDICES (8+ indices)
+  # Surface wind speed metrics for energy and impact assessment
+  wind:
+    - mean_wind_speed           # Annual mean wind speed
+    - max_wind_speed           # Maximum daily wind speed
+    - wind_speed_variability   # Wind speed variability
+    - calm_days                # Days with low wind speed (<2 m/s)
+    - windy_days               # Days with high wind speed (>10 m/s)
+    - very_windy_days          # Days with very high wind speed (>15 m/s)
+    - wind_power_density       # Wind energy potential
+    - wind_gust_frequency      # Frequency of strong wind events
+
+  # MULTIVARIATE INDICES (8+ indices)
+  # Combined temperature-precipitation-wind compound events
+  multivariate:
+    - cold_and_dry_days     # Compound cold+dry events
+    - cold_and_wet_days     # Compound cold+wet events
+    - warm_and_dry_days     # Compound warm+dry events (drought+heat)
+    - warm_and_wet_days     # Compound warm+wet events
+    - hot_and_windy_days    # Combined heat and wind stress
+    - cold_and_windy_days   # Combined cold and wind stress
+    - drought_heat_events   # Compound drought and heat waves
+    - wet_and_windy_events  # Storm-like conditions
+
+# OUTPUT CONFIGURATION
+output:
+  format: 'netcdf'  # NetCDF format for scientific data standards
+
+  # High-performance compression for large datasets
+  compression:
+    complevel: 6      # Higher compression for comprehensive output
+    engine: 'h5netcdf' # Optimized NetCDF engine
+
+  # Save intermediate results for debugging/analysis
+  save_preprocessed: true    # Save cleaned data for validation
+  save_annual_files: true   # Save indices by year for time series analysis
+
+  # CSV output options (for point extraction workflows)
+  csv_formats:
+    long_format: true         # Each row = location-year combination
+    wide_format: true         # Each row = location, columns = index_year
+    historical_only: true     # Focus on observational period (1950-2014)
+
+  # CF-compliant metadata for scientific reproducibility
+  attributes:
+    institution: 'xclim-timber Climate Data Pipeline'
+    source: 'NorESM2-LM Climate Model (CMIP6) - NASA Earth Exchange (NEX)'
+    title: 'Comprehensive Climate Indices from NorESM2-LM Historical Simulation'
+    history: 'Processed with xclim library following WMO standards'
+    references: 'https://xclim.readthedocs.io/ | https://www.nasa.gov/nasa-earth-exchange-nex/gddp/'
+    contact: 'Climate Data Processing Pipeline'
+    comment: 'Climate indices calculated using scientifically-validated xclim methods'
+
+    # Data Citation Information
+    data_citation: >
+      Seland, Øyvind; Bentsen, Mats; Oliviè, Dirk Jan Leo; Toniazzo, Thomas; et al. (2019).
+      NCC NorESM2-LM model output prepared for CMIP6.
+      Earth System Grid Federation. https://doi.org/10.22033/ESGF/CMIP6.8036
+
+    model_description: >
+      NorESM2-LM (Norwegian Earth System Model 2 - low atmosphere-medium ocean resolution):
+      CAM-OSLO atmosphere (2° resolution, 144x96, 32 levels),
+      MICOM ocean (1° resolution, 360x384, 70 levels),
+      CLM land model, CICE sea ice, OsloAero aerosols
+
+    license: 'Creative Commons Attribution 4.0 (CC BY 4.0)'
+    terms_of_use: 'https://pcmdi.llnl.gov/CMIP6/TermsOfUse'
+    ipcc_context: 'CMIP6 data supporting IPCC Sixth Assessment Report (AR6)'
+
+# QUALITY CONTROL CONFIGURATION
+quality_control:
+  # Missing data handling
+  check_missing: true
+  missing_threshold: 0.15    # Allow up to 15% missing data per year
+  interpolate_missing: true  # Interpolate small gaps
+
+  # Outlier detection for data validation
+  check_outliers: true
+  outlier_method: 'zscore'   # Statistical outlier detection
+  outlier_threshold: 4       # Conservative threshold for climate extremes
+
+  # Physical bounds checking
+  check_physical_bounds: true
+  temperature_bounds: [-90, 60]    # Realistic temperature range (°C)
+  precipitation_bounds: [0, 2000]  # Daily precip limits (mm/day)
+  humidity_bounds: [0, 100]       # Relative humidity (%)
+
+# PERFORMANCE MONITORING
+monitoring:
+  enable_progress_bars: true    # Visual progress tracking
+  log_memory_usage: true       # Monitor resource consumption
+  benchmark_performance: true   # Track processing times
+  save_diagnostics: true       # Save processing statistics

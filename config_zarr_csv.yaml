@@ -1,0 +1,48 @@
+# Configuration for processing Zarr store with CSV output
+# Processes the PRISM January 1981 data and outputs CSV
+
+data:
+  # Point to current directory with the Zarr store
+  input_path: .
+
+  # Output directory for results
+  output_path: ./outputs/zarr_csv
+
+  # Log directory
+  log_path: ./logs
+
+  # File patterns for temperature data
+  file_patterns:
+    temperature:
+      - 'tmin*.zarr'  # PRISM minimum temperature Zarr store
+
+processing:
+  # Memory management
+  max_files_per_batch: 10
+
+  # Temperature units
+  temperature_units: 'degC'
+  auto_convert_units: true
+  strict_units: false
+
+indices:
+  # Calculate basic indices for January 1981
+  temperature:
+    - frost_days     # Number of frost days (Tmin < 0°C)
+    - tn_min        # Minimum of minimum temperatures
+
+output:
+  format: 'csv'  # Output as CSV instead of NetCDF
+
+  # CSV output options
+  csv_formats:
+    long_format: true    # Each row = location-time combination
+    wide_format: false   # Skip wide format for this demo
+    historical_only: false # Process all available data (1981)
+
+  # Point extraction settings (sample grid points)
+  extraction:
+    # Sample every Nth point to create manageable CSV
+    sample_spacing: 50  # Sample every 50th grid point
+    include_coordinates: true
+    include_metadata: true

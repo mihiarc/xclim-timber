@@ -374,65 +374,6 @@ class ClimateDataPreprocessor:
         
         return ds
     
-    def resample_temporal(self, ds: xr.Dataset, 
-                         frequency: str = 'D') -> xr.Dataset:
-        """
-        Resample data to a different temporal frequency.
-        
-        Parameters:
-        -----------
-        ds : xr.Dataset
-            Input dataset
-        frequency : str
-            Target frequency ('D', 'W', 'M', 'Y')
-        
-        Returns:
-        --------
-        xr.Dataset
-            Resampled dataset
-        """
-        if 'time' not in ds.dims:
-            logger.warning("No time dimension found, skipping resampling")
-            return ds
-        
-        logger.info(f"Resampling to {frequency} frequency")
-        
-        # Define resampling methods for different variables
-        resample_methods = {
-            'temperature': 'mean',
-            'precipitation': 'sum',
-            'humidity': 'mean',
-            'wind': 'mean',
-            'pressure': 'mean'
-        }
-        
-        # Resample each variable
-        resampled_vars = {}
-        for var in ds.data_vars:
-            # Determine method based on variable name or type
-            method = 'mean'  # default
-            for key in resample_methods:
-                if key in var.lower():
-                    method = resample_methods[key]
-                    break
-            
-            if method == 'mean':
-                resampled_vars[var] = ds[var].resample(time=frequency).mean()
-            elif method == 'sum':
-                resampled_vars[var] = ds[var].resample(time=frequency).sum()
-            elif method == 'max':
-                resampled_vars[var] = ds[var].resample(time=frequency).max()
-            elif method == 'min':
-                resampled_vars[var] = ds[var].resample(time=frequency).min()
-        
-        # Create new dataset
-        ds_resampled = xr.Dataset(resampled_vars)
-        
-        # Copy attributes
-        ds_resampled.attrs = ds.attrs.copy()
-        ds_resampled.attrs['temporal_resolution'] = frequency
-        
-        return ds_resampled
 
 
 # Example usage
