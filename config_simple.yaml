@@ -3,7 +3,7 @@
 
 data:
   # Path to your external drive with climate data
-  input_path: /media/external_drive/climate_data
+  input_path: ./data/sample_data
   
   # Output directory for results
   output_path: ./outputs
@@ -23,20 +23,14 @@ data:
       - '*temperature*.tif'
       - '*temp*.tif'
       - '*tas*.tif'
+      - '*temperature*.zarr'  # Now supports Zarr stores
+      - '*temp*.zarr'
+      - '*tas*.zarr'
 
 processing:
-  # Chunk sizes for processing large files
-  chunk_size:
-    time: 365  # Process one year at a time
-    lat: 100
-    lon: 100
-  
-  # Dask configuration for parallel processing
-  dask:
-    n_workers: 2  # Start with fewer workers for testing
-    threads_per_worker: 1
-    memory_limit: '2GB'
-  
+  # Memory management for processing large files
+  max_files_per_batch: 10  # Process files in batches to manage memory
+
   # Target units for temperature calculations
   # Options: 'degC' (Celsius), 'K' (Kelvin), 'degF' (Fahrenheit)
   # The pipeline will automatically convert input data to these units
@@ -53,14 +47,21 @@ processing:
 
 indices:
   # Baseline period for percentile calculations (WMO standard)
+  # Note: Our sample data is 2001-2025, so percentile-based indices
+  # that require baseline data won't work without historical data
   baseline_period:
     start: 1971
     end: 2000
   use_baseline_for_percentiles: true
 
-  # Just calculate annual mean for now
+  # Calculate multiple temperature indices
   temperature:
-    - annual_mean
+    - tg_mean        # Annual mean temperature
+    - tx_max         # Annual maximum temperature
+    - tn_min         # Annual minimum temperature
+    - frost_days     # Number of frost days (Tmin < 0°C)
+    - summer_days    # Number of summer days (Tmax > 25°C)
+    - tropical_nights # Number of tropical nights (Tmin > 20°C)
 
 output:
   format: 'netcdf'  # or 'geotiff'

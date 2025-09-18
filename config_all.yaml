@@ -36,19 +36,7 @@ data:
       - 'sfcWind/historical/sfcWind_day_NorESM2-LM_historical_r1i1p1f1_gn_*.nc'
 
 processing:
-  # Optimized chunk sizes for NorESM2-LM daily data
-  chunk_size:
-    time: 365   # Process one year at a time for annual indices
-    lat: 96     # NorESM2-LM native resolution optimization
-    lon: 144    # NorESM2-LM native resolution optimization
-
-  # Dask configuration for parallel processing
-  dask:
-    n_workers: 6              # Utilize more cores for comprehensive processing
-    threads_per_worker: 2     # Balance memory vs parallelism
-    memory_limit: '4GB'       # Allow more memory per worker
-    dashboard_address: ':8787'
-
+  # Processing settings - simplified without dask
   # Temporal resampling (keep daily for accurate indices calculation)
   resampling:
     temporal: 'D'  # Daily frequency maintained
@@ -61,6 +49,9 @@ processing:
 
   # Coordinate reference system
   crs: 'EPSG:4326'  # Geographic coordinate system
+
+  # Memory management
+  max_files_per_batch: 10     # Process files in batches to manage memory
 
 indices:
   # WMO Standard baseline period for percentile calculations

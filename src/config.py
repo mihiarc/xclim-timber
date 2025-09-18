@@ -45,27 +45,10 @@ class Config:
                     'wind': ['*sfcWind*.tif', '*sfcWind*.nc', '*wind*.tif', '*wind*.nc']
                 }
             },
-            
+
             # Processing settings
             'processing': {
-                'chunk_size': {
-                    'time': 365,  # Process one year at a time
-                    'lat': 100,
-                    'lon': 100
-                },
-                'dask': {
-                    'n_workers': 4,
-                    'threads_per_worker': 2,
-                    'memory_limit': '4GB',
-                    'dashboard_address': ':8787'
-                },
-                'resampling': {
-                    'temporal': 'D',  # Daily
-                    'spatial_resolution': None  # Keep original
-                },
                 'temperature_units': 'degC',  # Target units for temperature calculations
-                'auto_convert_units': True,   # Enable automatic unit conversion
-                'strict_units': False,        # If True, fail when units cannot be determined
                 'crs': 'EPSG:4326'  # Default CRS
             },
             
@@ -242,15 +225,6 @@ class Config:
         """Get log path."""
         return Path(self.get('data.log_path'))
     
-    @property
-    def chunk_sizes(self) -> Dict:
-        """Get chunk sizes for dask."""
-        return self.get('processing.chunk_size')
-    
-    @property
-    def dask_config(self) -> Dict:
-        """Get dask configuration."""
-        return self.get('processing.dask')
     
     @property
     def indices_config(self) -> Dict:
