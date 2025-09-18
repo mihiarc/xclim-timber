@@ -1110,6 +1110,14 @@ class ClimateIndicesCalculator:
         if format == 'netcdf':
             # Save as NetCDF
             compression = self.config.get('output.compression', {})
+
+            # Clean up time coordinate attributes to avoid encoding conflicts
+            if 'time' in ds_out.coords:
+                if 'units' in ds_out.time.attrs:
+                    del ds_out.time.attrs['units']
+                if 'calendar' in ds_out.time.attrs:
+                    del ds_out.time.attrs['calendar']
+
             ds_out.to_netcdf(
                 output_path,
                 engine=compression.get('engine', 'h5netcdf'),
