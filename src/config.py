@@ -45,16 +45,10 @@ class Config:
                     'wind': ['*sfcWind*.tif', '*sfcWind*.nc', '*wind*.tif', '*wind*.nc']
                 }
             },
-            
+
             # Processing settings
             'processing': {
-                'resampling': {
-                    'temporal': 'D',  # Daily
-                    'spatial_resolution': None  # Keep original
-                },
                 'temperature_units': 'degC',  # Target units for temperature calculations
-                'auto_convert_units': True,   # Enable automatic unit conversion
-                'strict_units': False,        # If True, fail when units cannot be determined
                 'crs': 'EPSG:4326'  # Default CRS
             },
             

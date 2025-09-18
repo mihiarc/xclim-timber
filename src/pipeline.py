@@ -149,10 +149,6 @@ class ClimateDataPipeline:
             try:
                 processed = preprocessor.preprocess(ds, variable_type=var_name)
                 
-                # Apply temporal resampling if configured
-                resample_freq = self.config.get('processing.resampling.temporal')
-                if resample_freq and resample_freq != 'D':
-                    processed = preprocessor.resample_temporal(processed, resample_freq)
                 
                 self.processed_datasets[var_name] = processed
                 self.logger.info(f"Preprocessed {var_name}: shape={dict(processed.dims)}")

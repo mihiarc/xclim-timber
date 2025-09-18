@@ -668,35 +668,6 @@ class ClimateIndicesCalculator:
                 logger.info("Calculated growing season length")
             except Exception as e:
                 logger.error(f"Error calculating gsl: {e}")
-        
-        # Standardized Precipitation Index (SPI)
-        if 'spi' in agricultural_indices and pr is not None:
-            try:
-                # SPI requires monthly data
-                pr_monthly = pr.resample(time='M').sum()
-                indices['spi_3'] = atmos.standardized_precipitation_index(
-                    pr_monthly,
-                    freq='MS',
-                    window=3,
-                    dist='gamma',
-                    method='APP'
-                )
-                logger.info("Calculated 3-month SPI")
-            except Exception as e:
-                logger.error(f"Error calculating spi: {e}")
-
-        # Enhanced evapotranspiration calculations
-        evapotranspiration_indices = self.indices_config.get('evapotranspiration', [])
-
-        if tas is not None and 'potential_evapotranspiration' in evapotranspiration_indices:
-            try:
-                # Simple Thornthwaite method using only temperature
-                indices['potential_evapotranspiration'] = atmos.potential_evapotranspiration(
-                    tas, method='thornthwaite', freq='MS'
-                )
-                logger.info("Calculated potential evapotranspiration (Thornthwaite)")
-            except Exception as e:
-                logger.error(f"Error calculating potential_evapotranspiration: {e}")
 
         # Multivariate temperature-precipitation indices
         multivariate_indices = self.indices_config.get('multivariate', [])
@@ -729,24 +700,6 @@ class ClimateIndicesCalculator:
                 except Exception as e:
                     logger.error(f"Error calculating warm_and_wet_days: {e}")
 
-        # Note: SPEI requires potential evapotranspiration calculation
-        # Enhanced SPEI with better ET estimation
-        if 'spei' in agricultural_indices and tas is not None and pr is not None:
-            try:
-                # Calculate PET using temperature-based method
-                pet = atmos.potential_evapotranspiration(tas, method='thornthwaite', freq='D')
-                # Calculate water balance (P - PET)
-                water_balance = pr - pet
-
-                # Resample to monthly for SPEI calculation
-                wb_monthly = water_balance.resample(time='M').sum()
-
-                indices['spei_3'] = atmos.standardized_precipitation_evapotranspiration_index(
-                    wb_monthly, freq='MS', window=3, dist='gamma'
-                )
-                logger.info("Calculated 3-month SPEI")
-            except Exception as e:
-                logger.error(f"Error calculating spei: {e}")
         
         return indices
     
@@ -826,43 +779,10 @@ class ClimateIndicesCalculator:
                         return var
         return None
 
-    def _infer_temperature_units(self, data: xr.DataArray) -> str:
-        """
-        Infer temperature units from data range.
-
-        Parameters:
-        -----------
-        data : xr.DataArray
-            Temperature data
-
-        Returns:
-        --------
-        str
-            Inferred units ('K', 'degC', or 'degF')
-        """
-        min_val = float(data.min())
-        max_val = float(data.max())
-
-        # Check for Kelvin (typical range: 200-350K)
-        if min_val > 200 and max_val < 350:
-            logger.info(f"Inferred temperature units as Kelvin (range: {min_val:.1f}-{max_val:.1f})")
-            return 'K'
-        # Check for Celsius (typical range: -80 to 60°C)
-        elif min_val > -100 and max_val < 60:
-            logger.info(f"Inferred temperature units as Celsius (range: {min_val:.1f}-{max_val:.1f})")
-            return 'degC'
-        # Check for Fahrenheit (typical range: -100 to 140°F)
-        elif min_val > -150 and max_val < 150:
-            logger.info(f"Inferred temperature units as Fahrenheit (range: {min_val:.1f}-{max_val:.1f})")
-            return 'degF'
-        else:
-            logger.warning(f"Cannot reliably infer temperature units from range: {min_val:.1f} to {max_val:.1f}")
-            # Default to Celsius if uncertain
-            return 'degC'
 
     def _ensure_temperature_units(self, data: xr.DataArray, target_units: str = 'degC') -> xr.DataArray:
         """
-        Ensure temperature data is in the correct units.
+        Ensure temperature data is in the correct units using xclim's built-in conversion.
 
         Parameters:
         -----------
@@ -876,81 +796,38 @@ class ClimateIndicesCalculator:
         xr.DataArray
             Temperature data in target units
         """
-        # Check if units attribute exists
-        current_units = data.attrs.get('units', '')
-
-        # Normalize unit strings for comparison
-        unit_mappings = {
-            'celsius': 'degC', 'deg_c': 'degC', 'c': 'degC', '°c': 'degC',
-            'kelvin': 'K', 'k': 'K',
-            'fahrenheit': 'degF', 'deg_f': 'degF', 'f': 'degF', '°f': 'degF'
-        }
-
-        current_units_normalized = unit_mappings.get(current_units.lower(), current_units)
-
-        # If no units specified, try to infer from data range
-        if not current_units_normalized:
-            current_units_normalized = self._infer_temperature_units(data)
-            data.attrs['units'] = current_units_normalized
-            logger.warning(f"No units attribute found for temperature data. Inferred: {current_units_normalized}")
-
-        # Convert if needed
-        if current_units_normalized != target_units:
-            try:
-                logger.info(f"Converting temperature from {current_units_normalized} to {target_units}")
-                data = convert_units_to(data, target_units)
-                logger.info(f"Successfully converted temperature units")
-            except Exception as e:
-                logger.error(f"Failed to convert temperature units: {e}")
-                logger.warning(f"Proceeding with original units, calculations may be incorrect")
-
-        return data
+        try:
+            # Use xclim's built-in unit conversion - it handles unit detection automatically
+            return convert_units_to(data, target_units)
+        except Exception as e:
+            logger.warning(f"Could not convert temperature units for {data.name}: {e}")
+            return data
 
     def _convert_output_to_celsius(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
         """
-        Convert temperature outputs from Kelvin to Celsius, handling absolute temperatures vs differences correctly.
+        Convert temperature outputs to Celsius using xclim's built-in conversion.
 
         Parameters:
         -----------
         result : xr.DataArray
-            Result data array (potentially in Kelvin)
+            Result data array
         index_name : str
-            Name of the climate index (used to determine conversion type)
+            Name of the climate index
 
         Returns:
         --------
         xr.DataArray
-            Result converted appropriately for Celsius output
+            Result in Celsius if applicable
         """
         if result is None:
             return None
 
-        # Check if result has Kelvin units (xclim default output)
-        result_units = result.attrs.get('units', '')
-        if result_units != 'K':
-            return result
-
         try:
-            # Temperature differences: same numerical value, just change units label
-            # These represent differences in temperature, not absolute temperatures
-            temperature_difference_indices = {
-                'daily_temperature_range',
-                'daily_temperature_range_variability'
-            }
-
-            if index_name in temperature_difference_indices:
-                # For temperature differences, 1K = 1°C, so just change the units label
-                result.attrs['units'] = 'degC'
-                logger.debug(f"Changed units label for temperature difference {index_name}: K -> °C")
-            else:
-                # For absolute temperatures, apply full conversion (subtract 273.15)
-                result = convert_units_to(result, 'degC')
-                logger.debug(f"Converted absolute temperature {index_name} from Kelvin to Celsius")
-
+            # Use xclim's built-in unit conversion
+            return convert_units_to(result, 'degC')
         except Exception as e:
-            logger.warning(f"Could not convert output units for {index_name}: {e}")
-
-        return result
+            logger.debug(f"Could not convert output units for {index_name}: {e}")
+            return result
 
     def _validate_variable(self, var: xr.DataArray, expected_name: str) -> bool:
         """
