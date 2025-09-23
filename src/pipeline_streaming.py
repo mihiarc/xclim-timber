@@ -24,6 +24,7 @@ from indices_calculator import ClimateIndicesCalculator
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
 
 logger = logging.getLogger(__name__)
 

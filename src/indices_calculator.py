@@ -28,6 +28,7 @@ def suppress_climate_warnings():
         warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
         warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
         warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
         yield
 
 
@@ -136,12 +137,15 @@ class ClimateIndicesCalculator:
         # Get target units from config (default to Celsius)
         target_units = self.config.get('processing.temperature_units', 'degC')
 
-        # Ensure all temperature variables are in correct units
+        # Prepare input data with proper CF attributes
         if tas is not None:
+            tas = self._prepare_input_data(tas, 'temperature_mean')
             tas = self._ensure_temperature_units(tas, target_units)
         if tasmax is not None:
+            tasmax = self._prepare_input_data(tasmax, 'temperature_max')
             tasmax = self._ensure_temperature_units(tasmax, target_units)
         if tasmin is not None:
+            tasmin = self._prepare_input_data(tasmin, 'temperature_min')
             tasmin = self._ensure_temperature_units(tasmin, target_units)
 
         # If we only have mean temperature, use it for max/min as well
@@ -804,6 +808,38 @@ class ClimateIndicesCalculator:
                         return var
         return None
 
+
+    def _prepare_input_data(self, data: xr.DataArray, var_type: str = 'temperature') -> xr.DataArray:
+        """
+        Prepare input data with proper CF attributes to avoid warnings.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Input data array
+        var_type : str
+            Type of variable ('temperature', 'precipitation', etc.)
+
+        Returns:
+        --------
+        xr.DataArray
+            Data with proper CF attributes
+        """
+        if data is None:
+            return None
+
+        # Add cell_methods if not present
+        if 'cell_methods' not in data.attrs:
+            if 'tas' in str(data.name) or 'mean' in str(var_type):
+                data.attrs['cell_methods'] = 'time: mean'
+            elif 'max' in str(data.name) or 'tasmax' in str(data.name):
+                data.attrs['cell_methods'] = 'time: maximum'
+            elif 'min' in str(data.name) or 'tasmin' in str(data.name):
+                data.attrs['cell_methods'] = 'time: minimum'
+            else:
+                data.attrs['cell_methods'] = 'time: point'
+
+        return data
 
     def _ensure_temperature_units(self, data: xr.DataArray, target_units: str = 'degC') -> xr.DataArray:
         """
