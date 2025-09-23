@@ -287,9 +287,10 @@ class ClimateIndicesCalculator:
             # Hot days (Tmax > 30°C)
             if 'hot_days' in configured_indices:
                 try:
-                    indices['hot_days'] = generic.threshold_count(
-                        tasmax, thresh='30 degC', op='>', freq='YS'
+                    result = generic.count_level_crossings(
+                        tasmax, thresholds='30 degC', freq='YS', op='>'
                     )
+                    indices['hot_days'] = self._convert_timedelta_to_days(result, 'hot_days')
                     logger.info("Calculated hot days")
                 except Exception as e:
                     logger.error(f"Error calculating hot_days: {e}")
@@ -297,9 +298,10 @@ class ClimateIndicesCalculator:
             # Very hot days (Tmax > 35°C)
             if 'very_hot_days' in configured_indices:
                 try:
-                    indices['very_hot_days'] = generic.threshold_count(
-                        tasmax, thresh='35 degC', op='>', freq='YS'
+                    result = generic.count_level_crossings(
+                        tasmax, thresholds='35 degC', freq='YS', op='>'
                     )
+                    indices['very_hot_days'] = self._convert_timedelta_to_days(result, 'very_hot_days')
                     logger.info("Calculated very hot days")
                 except Exception as e:
                     logger.error(f"Error calculating very_hot_days: {e}")
@@ -308,9 +310,10 @@ class ClimateIndicesCalculator:
             # Warm nights (Tmin > 15°C)
             if 'warm_nights' in configured_indices:
                 try:
-                    indices['warm_nights'] = generic.threshold_count(
-                        tasmin, thresh='15 degC', op='>', freq='YS'
+                    result = generic.count_level_crossings(
+                        tasmin, thresholds='15 degC', freq='YS', op='>'
                     )
+                    indices['warm_nights'] = self._convert_timedelta_to_days(result, 'warm_nights')
                     logger.info("Calculated warm nights")
                 except Exception as e:
                     logger.error(f"Error calculating warm_nights: {e}")

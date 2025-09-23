@@ -126,7 +126,7 @@ def estimate_processing_requirements(chunk_years=1):
     print(f"  Output: {n_chunks} chunk files + 1 combined file (~10-20 GB total)")
 
 
-def run_comprehensive_processing(chunk_years=1):
+def run_comprehensive_processing(chunk_years=1, enable_dashboard=True):
     """
     Execute the comprehensive climate indices calculation using streaming approach.
 
@@ -134,6 +134,8 @@ def run_comprehensive_processing(chunk_years=1):
     -----------
     chunk_years : int
         Number of years to process per chunk (default: 1)
+    enable_dashboard : bool
+        Whether to enable Dask dashboard (default: False)
     """
 
     print("\n" + "=" * 80)
@@ -146,11 +148,17 @@ def run_comprehensive_processing(chunk_years=1):
         print(f"✗ Configuration not found: {config_path}")
         return False
 
+    # Load config and set dashboard preference
+    config = Config(str(config_path))
+    config.config_dict['processing']['dask']['dashboard'] = enable_dashboard
+
     print(f"\nUsing configuration: {config_path}")
     print("Processing period: 2001-2024")
     print("Baseline period: 1981-2000")
     print("Indices: 42+ across 8 categories")
     print(f"⚡ Streaming mode: {chunk_years}-year chunks")
+    if enable_dashboard:
+        print("📊 Dashboard: http://localhost:8787 (may have visualization issues)")
 
     # Initialize streaming pipeline
     print("\n" + "-" * 40)
@@ -163,9 +171,13 @@ def run_comprehensive_processing(chunk_years=1):
         # Run streaming processing
         print("\n" + "-" * 40)
         print("Starting streaming calculation...")
-        print("Monitor progress at: http://localhost:8787")
         print(f"\nProcessing {24 // chunk_years} chunks sequentially...")
-        print("Each chunk will be saved immediately to conserve memory.\n")
+        print("Each chunk will be saved immediately to conserve memory.")
+        if enable_dashboard:
+            print("📊 Monitor progress at: http://localhost:8787")
+            print("Note: Dashboard may show errors for complex task graphs\n")
+        else:
+            print("Dashboard disabled for cleaner processing\n")
 
         start_time = datetime.now()
 
@@ -250,6 +262,10 @@ def main():
         '--show-warnings', action='store_true',
         help='Show all warnings (useful for debugging)'
     )
+    parser.add_argument(
+        '--no-dashboard', action='store_true',
+        help='Disable Dask dashboard to avoid visualization errors'
+    )
 
     args = parser.parse_args()
 
@@ -296,7 +312,10 @@ def main():
             return 0
 
     # Step 4: Run streaming processing
-    success = run_comprehensive_processing(chunk_years=args.chunk_years)
+    success = run_comprehensive_processing(
+        chunk_years=args.chunk_years,
+        enable_dashboard=not args.no_dashboard
+    )
 
     if success:
         print("\n✓ All streaming processing completed successfully!")

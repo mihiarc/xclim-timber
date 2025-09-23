@@ -71,14 +71,40 @@ class StreamingClimatePipeline:
         if self.client is None:
             n_workers = self.config.get('processing.dask.n_workers', 4)
             memory_limit = self.config.get('processing.dask.memory_limit', '4GB')
+            enable_dashboard = self.config.get('processing.dask.dashboard', True)  # Enabled by default
 
-            self.client = Client(
-                n_workers=n_workers,
-                threads_per_worker=1,
-                memory_limit=memory_limit,
-                dashboard_address=':8787'
-            )
-            logger.info(f"Dask dashboard: http://localhost:8787")
+            try:
+                if enable_dashboard:
+                    # Dashboard enabled - may have visualization issues with complex graphs
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=':8787',
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask dashboard: http://localhost:8787")
+                else:
+                    # Dashboard disabled for cleaner processing
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=None,
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask client initialized (dashboard disabled)")
+            except Exception as e:
+                # Fallback to simple client without dashboard
+                logger.warning(f"Could not initialize Dask client with dashboard: {e}")
+                self.client = Client(
+                    n_workers=n_workers,
+                    threads_per_worker=1,
+                    memory_limit=memory_limit,
+                    dashboard_address=None,
+                    silence_logs=logging.ERROR
+                )
+                logger.info(f"Dask client initialized (dashboard disabled due to error)")
 
     def _get_zarr_stores(self) -> Dict[str, str]:
         """
