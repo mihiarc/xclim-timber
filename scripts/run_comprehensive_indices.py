@@ -10,6 +10,17 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import argparse
+import warnings
+
+# Suppress common warnings for climate data processing
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
+
+# Configure logging to reduce verbosity from xclim
+logging.getLogger('xclim').setLevel(logging.WARNING)
+logging.getLogger('xclim.core.cfchecks').setLevel(logging.ERROR)
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -235,8 +246,17 @@ def main():
         '--yes', '-y', action='store_true',
         help='Skip confirmation prompt'
     )
+    parser.add_argument(
+        '--show-warnings', action='store_true',
+        help='Show all warnings (useful for debugging)'
+    )
 
     args = parser.parse_args()
+
+    # Reset warning filters if requested
+    if args.show_warnings:
+        warnings.resetwarnings()
+        print("⚠ Warning suppression disabled - all warnings will be shown")
 
     print("\n" + "=" * 80)
     print("COMPREHENSIVE CLIMATE INDICES PROCESSOR")
