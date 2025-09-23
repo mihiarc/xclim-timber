@@ -1,0 +1,243 @@
+# Comprehensive Climate Indices Configuration
+# Processing Period: 2001-2024 | Baseline: 1981-2000
+# For use with PRISM or other comprehensive climate datasets
+
+# Data paths
+data:
+  input_path: /media/mihiarc/SSD4TB/data/PRISM  # Update to your data location
+  output_path: ./outputs/comprehensive_2001_2024
+  log_path: ./logs
+
+  # Zarr store patterns for comprehensive processing
+  zarr_stores:
+    temperature:
+      - 'prism.zarr/temperature'  # Contains tmin, tmax, tmean
+    precipitation:
+      - 'prism.zarr/precipitation'  # Contains ppt
+    humidity:
+      - 'prism.zarr/humidity'  # Contains tdmean, vpdmax, vpdmin
+
+# Processing settings
+processing:
+  # Time period for analysis
+  time_range:
+    start: '2001-01-01'
+    end: '2024-12-31'
+
+  temperature_units: degC  # PRISM already in Celsius
+
+  # Optimal chunk sizes for memory management
+  chunk_size:
+    time: 365  # Process one year at a time
+    lat: 100   # Spatial chunking
+    lon: 140   # Adjusted for PRISM grid (621x1405)
+
+  # Zarr optimizations
+  zarr:
+    consolidated: false  # PRISM uses Zarr v3
+    parallel_reads: true
+
+  # Dataset information
+  dataset_info:
+    name: "PRISM 4km Daily"
+    spatial_resolution: 4km
+    temporal_resolution: daily
+    coverage: "Continental United States"
+
+# Climate indices configuration - ALL 42+ indices
+indices:
+  # CRITICAL: Baseline period for percentile calculations
+  baseline_period:
+    start: 1981  # 20-year baseline
+    end: 2000
+  use_baseline_for_percentiles: true  # Required for extremes
+
+  # ========================================
+  # TEMPERATURE INDICES (17 indices)
+  # ========================================
+  temperature:
+    # Basic Statistics (5 indices)
+    - tg_mean                    # Annual mean temperature
+    - tx_max                     # Annual maximum temperature
+    - tn_min                     # Annual minimum temperature
+    - daily_temperature_range    # Mean daily temperature range
+    - daily_temperature_range_variability  # Temperature range variability
+
+    # Threshold-Based Counts (8 indices)
+    - tropical_nights            # Nights with Tmin > 20°C
+    - frost_days                 # Days with Tmin < 0°C
+    - ice_days                   # Days with Tmax < 0°C
+    - summer_days                # Days with Tmax > 25°C
+    - hot_days                   # Days with Tmax > 30°C
+    - very_hot_days              # Days with Tmax > 35°C
+    - warm_nights                # Nights with Tmin > 15°C
+    - consecutive_frost_days     # Maximum consecutive frost days
+
+    # Degree Day Metrics (4 indices)
+    - growing_degree_days        # GDD base 10°C
+    - heating_degree_days        # HDD base 17°C
+    - cooling_degree_days        # CDD base 18°C
+    - degree_days_exceedance_date  # Date of GDD threshold
+
+  # ========================================
+  # PRECIPITATION INDICES (10 indices)
+  # ========================================
+  precipitation:
+    # Basic Statistics (4 indices)
+    - prcptot                    # Total precipitation (wet days)
+    - rx1day                     # Max 1-day precipitation
+    - rx5day                     # Max 5-day precipitation
+    - sdii                       # Simple daily intensity index
+
+    # Consecutive Events (2 indices)
+    - cdd                        # Consecutive dry days
+    - cwd                        # Consecutive wet days
+
+    # Intensity Events (4 indices)
+    - r10mm                      # Heavy precipitation days (≥10mm)
+    - r20mm                      # Very heavy precipitation days (≥20mm)
+    - r95p                       # Very wet days (>95th percentile)
+    - r99p                       # Extremely wet days (>99th percentile)
+
+  # ========================================
+  # EXTREME WEATHER INDICES (6 indices)
+  # ========================================
+  extremes:
+    # Temperature Extremes - USES BASELINE
+    - tx90p                      # Warm days (>90th percentile)
+    - tn90p                      # Warm nights (>90th percentile)
+    - tx10p                      # Cool days (<10th percentile)
+    - tn10p                      # Cool nights (<10th percentile)
+
+    # Spell Duration - USES BASELINE
+    - warm_spell_duration_index  # WSDI (≥6 consecutive warm days)
+    - cold_spell_duration_index  # CSDI (≥6 consecutive cold days)
+
+  # ========================================
+  # HUMIDITY INDICES (2 indices)
+  # ========================================
+  humidity:
+    - dewpoint_temperature       # From specific humidity
+    - relative_humidity          # From specific humidity & temperature
+    # Note: PRISM provides tdmean (dew point) and VPD directly
+
+  # ========================================
+  # HUMAN COMFORT INDICES (2 indices)
+  # ========================================
+  comfort:
+    - heat_index                # Temperature + humidity effect
+    - humidex                    # Canadian humidity index
+
+  # ========================================
+  # EVAPOTRANSPIRATION INDICES (3 indices)
+  # ========================================
+  evapotranspiration:
+    - potential_evapotranspiration     # Thornthwaite method
+    - reference_evapotranspiration     # FAO-56 Penman-Monteith
+    - water_budget                     # P - PET
+
+  # ========================================
+  # MULTIVARIATE INDICES (4 indices)
+  # ========================================
+  multivariate:
+    - cold_and_dry_days         # T<25th & P<25th percentiles
+    - cold_and_wet_days         # T<25th & P>75th percentiles
+    - warm_and_dry_days         # T>75th & P<25th percentiles
+    - warm_and_wet_days         # T>75th & P>75th percentiles
+
+  # ========================================
+  # AGRICULTURAL INDICES (3+ indices)
+  # ========================================
+  agricultural:
+    - gsl                        # Growing season length
+    - spi_3                      # 3-month Standardized Precipitation Index
+    - spi_6                      # 6-month SPI
+    - spei_3                     # 3-month SPEI (if ET available)
+    - first_frost_date          # First frost of season
+    - last_frost_date           # Last frost of season
+    - frost_free_period         # Days between last/first frost
+
+# Output settings
+output:
+  format: netcdf
+  save_preprocessed: false
+
+  # Output organization
+  organize_by: year  # Create annual files for 2001-2024
+
+  compression:
+    complevel: 4
+    engine: h5netcdf
+
+  # Comprehensive metadata
+  metadata:
+    title: "Comprehensive Climate Indices 2001-2024"
+    source: "PRISM Climate Group, Oregon State University"
+    baseline_period: "1981-2000"
+    processing_period: "2001-01-01 to 2024-12-31"
+    indices_count: "42+ indices across 8 categories"
+    processing_software: "xclim-timber v2.0 (Zarr-exclusive)"
+    conventions: "CF-1.8"
+
+# Performance settings
+performance:
+  # Dask configuration for comprehensive processing
+  dask:
+    n_workers: 4
+    threads_per_worker: 2
+    memory_limit: '8GB'  # Increased for comprehensive processing
+
+  # Processing optimizations
+  parallel_indices: true
+  cache_baseline: true  # Critical for percentile calculations
+
+  # Progress monitoring
+  show_progress: true
+  dashboard_address: 'localhost:8787'
+
+# Quality control
+quality_control:
+  min_data_coverage: 0.9  # Require 90% data for index calculation
+  check_units: true
+  validate_ranges: true
+
+  # Expected ranges for validation
+  temperature_range: [-50, 60]  # °C
+  precipitation_range: [0, 500]  # mm/day
+  humidity_range: [0, 100]      # %
+
+# Index-specific configurations
+index_config:
+  # Degree day bases (can be customized)
+  degree_days:
+    growing_base: 10    # °C
+    heating_base: 17    # °C
+    cooling_base: 18    # °C
+
+  # Percentile thresholds
+  percentiles:
+    extreme_cold: 10
+    extreme_warm: 90
+    very_wet: 95
+    extremely_wet: 99
+
+  # Agricultural parameters
+  agricultural:
+    growing_season_tbase: 5  # °C
+    frost_threshold: 0       # °C
+    spi_distribution: 'gamma'
+
+  # Multivariate thresholds
+  multivariate:
+    cold_threshold: 25  # percentile
+    warm_threshold: 75  # percentile
+    dry_threshold: 25   # percentile
+    wet_threshold: 75   # percentile
+
+# Notes for users
+notes:
+  - "Ensure PRISM data covers full baseline period (1981-2000)"
+  - "Processing 24 years × 42 indices = 1000+ output variables"
+  - "Estimated processing time: 2-4 hours for full US at 4km"
+  - "Output size: ~10-20 GB depending on compression"
+  - "Monitor memory usage via Dask dashboard at localhost:8787"

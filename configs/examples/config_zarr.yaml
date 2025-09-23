@@ -1,0 +1,70 @@
+# xclim-timber Zarr-exclusive Configuration
+# Optimized for Zarr store processing
+
+# Data paths
+data:
+  input_path: /media/external_drive  # Path to external drive with Zarr stores
+  output_path: ./outputs
+  log_path: ./logs
+
+  # Zarr store patterns for each variable type
+  zarr_stores:
+    temperature:
+      - '*tas*.zarr'
+      - '*temp*.zarr'
+      - '*tmin*.zarr'
+      - '*tmax*.zarr'
+    precipitation:
+      - '*pr*.zarr'
+      - '*precip*.zarr'
+    humidity:
+      - '*hurs*.zarr'
+      - '*humid*.zarr'
+
+# Processing settings
+processing:
+  temperature_units: degC  # Target units for temperature
+  chunk_size:
+    time: 365  # Process one year at a time
+    lat: 100   # Spatial chunking
+    lon: 100
+
+  # Zarr-specific optimizations
+  zarr:
+    consolidated: true  # Use consolidated metadata for faster loading
+    parallel_reads: true
+
+# Climate indices to calculate
+indices:
+  # Baseline period for percentile calculations
+  baseline_period:
+    start: 1971
+    end: 2000
+
+  temperature:
+    - annual_mean
+    - frost_days
+    - ice_days
+    - summer_days
+    - tropical_nights
+    - growing_degree_days
+    - heating_degree_days
+    - cooling_degree_days
+
+  precipitation:
+    - prcptot
+    - rx1day
+    - rx5day
+    - sdii
+    - cdd
+    - cwd
+    - r10mm
+    - r20mm
+
+# Output settings
+output:
+  format: netcdf
+  save_preprocessed: false
+  compression:
+    complevel: 4
+    engine: h5netcdf

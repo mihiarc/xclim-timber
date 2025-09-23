@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Main pipeline orchestrator for xclim climate data processing.
-Coordinates the entire workflow from data loading to index calculation.
+Zarr-exclusive implementation for efficient large-scale data processing.
 """
 
 import logging
@@ -90,7 +90,7 @@ class ClimateDataPipeline:
     
     def load_data(self, variables: Optional[List[str]] = None) -> Dict[str, xr.Dataset]:
         """
-        Load climate data from external drive.
+        Load climate data from Zarr stores.
 
         Parameters:
         -----------
@@ -102,22 +102,23 @@ class ClimateDataPipeline:
         dict
             Dictionary of loaded datasets
         """
-        self.logger.info("=== Data Loading Phase ===")
+        self.logger.info("=== Data Loading Phase (Zarr) ===")
 
         loader = ClimateDataLoader(self.config)
-        
+
         if variables is None:
-            variables = list(self.config.get('data.file_patterns', {}).keys())
-        
-        for var in tqdm(variables, desc="Loading variables"):
-            self.logger.info(f"Loading {var} data")
+            # Get variables from zarr_stores configuration
+            variables = list(self.config.get('data.zarr_stores', {}).keys())
+
+        for var in tqdm(variables, desc="Loading Zarr stores"):
+            self.logger.info(f"Loading {var} data from Zarr")
             try:
                 ds = loader.load_variable_data(var)
                 if ds is not None:
                     self.datasets[var] = ds
                     self.logger.info(f"Loaded {var}: shape={dict(ds.dims)}")
                 else:
-                    self.logger.warning(f"No data found for {var}")
+                    self.logger.warning(f"No Zarr stores found for {var}")
             except Exception as e:
                 self.logger.error(f"Error loading {var}: {e}")
                 if self.verbose:
