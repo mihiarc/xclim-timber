@@ -148,10 +148,6 @@ def run_comprehensive_processing(chunk_years=1, enable_dashboard=True):
         print(f"✗ Configuration not found: {config_path}")
         return False
 
-    # Load config and set dashboard preference
-    config = Config(str(config_path))
-    config.config_dict['processing']['dask']['dashboard'] = enable_dashboard
-
     print(f"\nUsing configuration: {config_path}")
     print("Processing period: 2001-2024")
     print("Baseline period: 1981-2000")
@@ -165,8 +161,12 @@ def run_comprehensive_processing(chunk_years=1, enable_dashboard=True):
     print("Initializing streaming pipeline...")
 
     try:
-        # Use the new streaming pipeline
-        pipeline = StreamingClimatePipeline(str(config_path), chunk_years=chunk_years)
+        # Use the new streaming pipeline with dashboard preference
+        pipeline = StreamingClimatePipeline(
+            str(config_path),
+            chunk_years=chunk_years,
+            enable_dashboard=enable_dashboard
+        )
 
         # Run streaming processing
         print("\n" + "-" * 40)

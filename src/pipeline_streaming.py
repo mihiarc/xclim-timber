@@ -40,7 +40,7 @@ class StreamingClimatePipeline:
     - Parallel processing of independent time chunks
     """
 
-    def __init__(self, config_path: str, chunk_years: int = 1):
+    def __init__(self, config_path: str, chunk_years: int = 1, enable_dashboard: bool = True):
         """
         Initialize streaming pipeline.
 
@@ -50,9 +50,12 @@ class StreamingClimatePipeline:
             Path to configuration file
         chunk_years : int
             Number of years to process at once (default: 1)
+        enable_dashboard : bool
+            Whether to enable Dask dashboard (default: True)
         """
         self.config = Config(config_path)
         self.chunk_years = chunk_years
+        self.enable_dashboard = enable_dashboard
         self.client = None
 
         # Setup logging
@@ -71,7 +74,8 @@ class StreamingClimatePipeline:
         if self.client is None:
             n_workers = self.config.get('processing.dask.n_workers', 4)
             memory_limit = self.config.get('processing.dask.memory_limit', '4GB')
-            enable_dashboard = self.config.get('processing.dask.dashboard', True)  # Enabled by default
+            # Use instance variable, fallback to config, then default to True
+            enable_dashboard = self.enable_dashboard if hasattr(self, 'enable_dashboard') else self.config.get('processing.dask.dashboard', True)
 
             try:
                 if enable_dashboard:
