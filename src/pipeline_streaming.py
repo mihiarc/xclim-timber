@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Union, Tuple
 import xarray as xr
 import numpy as np
 from datetime import datetime
+import warnings
 import dask
 import dask.array as da
 from dask.distributed import Client, as_completed
@@ -18,6 +19,11 @@ from tqdm import tqdm
 
 from config import Config
 from indices_calculator import ClimateIndicesCalculator
+
+# Suppress common warnings for climate data processing
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
 
 logger = logging.getLogger(__name__)
 

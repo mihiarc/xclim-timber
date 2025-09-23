@@ -18,6 +18,19 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_climate_warnings():
+    """Context manager to suppress common warnings in climate data processing."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+        yield
+
+
 class ClimateIndicesCalculator:
     """Calculate climate indices using xclim."""
     
@@ -142,9 +155,10 @@ class ClimateIndicesCalculator:
             # Mean temperature
             if 'tg_mean' in configured_indices:
                 try:
-                    result = atmos.tg_mean(tas, freq='YS')
-                    indices['tg_mean'] = self._convert_output_to_celsius(result, 'tg_mean')
-                    logger.info("Calculated mean temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tg_mean(tas, freq='YS')
+                        indices['tg_mean'] = self._convert_output_to_celsius(result, 'tg_mean')
+                        logger.info("Calculated mean temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tg_mean: {e}")
         
@@ -152,9 +166,10 @@ class ClimateIndicesCalculator:
             # Maximum temperature
             if 'tx_max' in configured_indices:
                 try:
-                    result = atmos.tx_max(tasmax, freq='YS')
-                    indices['tx_max'] = self._convert_output_to_celsius(result, 'tx_max')
-                    logger.info("Calculated maximum temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tx_max(tasmax, freq='YS')
+                        indices['tx_max'] = self._convert_output_to_celsius(result, 'tx_max')
+                        logger.info("Calculated maximum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tx_max: {e}")
             
@@ -179,9 +194,10 @@ class ClimateIndicesCalculator:
             # Minimum temperature
             if 'tn_min' in configured_indices:
                 try:
-                    result = atmos.tn_min(tasmin, freq='YS')
-                    indices['tn_min'] = self._convert_output_to_celsius(result, 'tn_min')
-                    logger.info("Calculated minimum temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tn_min(tasmin, freq='YS')
+                        indices['tn_min'] = self._convert_output_to_celsius(result, 'tn_min')
+                        logger.info("Calculated minimum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tn_min: {e}")
             
@@ -248,11 +264,7 @@ class ClimateIndicesCalculator:
 
             if 'daily_temperature_range_variability' in configured_indices:
                 try:
-                    # Suppress division warnings for this calculation
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
-                        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
-
+                    with suppress_climate_warnings():
                         result = atmos.daily_temperature_range_variability(
                             tasmin, tasmax, freq='YS'
                         )
