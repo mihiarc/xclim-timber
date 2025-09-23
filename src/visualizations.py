@@ -12,18 +12,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.gridspec import GridSpec
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+
+# Optional imports
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+
+try:
+    import seaborn as sns
+    sns.set_style('whitegrid')
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
 # Set style
-sns.set_style('whitegrid')
 plt.rcParams['figure.dpi'] = 100
 plt.rcParams['savefig.dpi'] = 150
+plt.rcParams['axes.grid'] = True
+plt.rcParams['grid.alpha'] = 0.3
 
 
 class ClimateIndicesVisualizer:
@@ -152,7 +164,7 @@ class ClimateIndicesVisualizer:
     
     def plot_spatial_map(self, variable: str,
                         time_slice: Optional[str] = None,
-                        projection: Optional[ccrs.Projection] = None,
+                        projection: Optional[object] = None,
                         save: bool = True) -> plt.Figure:
         """
         Plot spatial map for a variable.
@@ -193,19 +205,23 @@ class ClimateIndicesVisualizer:
             logger.warning(f"No spatial dimensions found for {variable}")
             return None
         
-        # Set up projection
-        if projection is None:
-            projection = ccrs.PlateCarree()
-        
         # Create figure
         fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection=projection)
-        
-        # Add map features
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.5, alpha=0.5)
-        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-        ax.add_feature(cfeature.LAND, color='beige', alpha=0.3)
+
+        if HAS_CARTOPY and projection is not None:
+            # Use cartopy if available
+            if projection is None:
+                projection = ccrs.PlateCarree()
+            ax = fig.add_subplot(111, projection=projection)
+
+            # Add map features
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.5, alpha=0.5)
+            ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+            ax.add_feature(cfeature.LAND, color='beige', alpha=0.3)
+        else:
+            # Simple matplotlib plot without cartopy
+            ax = fig.add_subplot(111)
         
         # Plot data
         lons = self.ds[lon_dim].values
@@ -216,21 +232,29 @@ class ClimateIndicesVisualizer:
         vmin, vmax = self._get_color_limits(variable, data.values)
         
         # Plot with pcolormesh
-        im = ax.pcolormesh(lons, lats, data.values,
-                          transform=ccrs.PlateCarree(),
-                          cmap=cmap, vmin=vmin, vmax=vmax)
-        
+        if HAS_CARTOPY and projection is not None:
+            im = ax.pcolormesh(lons, lats, data.values,
+                              transform=ccrs.PlateCarree(),
+                              cmap=cmap, vmin=vmin, vmax=vmax)
+            # Set extent
+            ax.set_extent([lons.min(), lons.max(), lats.min(), lats.max()],
+                         ccrs.PlateCarree())
+            # Add gridlines
+            ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5)
+        else:
+            # Simple matplotlib without transform
+            im = ax.pcolormesh(lons, lats, data.values,
+                              cmap=cmap, vmin=vmin, vmax=vmax)
+            ax.set_xlim(lons.min(), lons.max())
+            ax.set_ylim(lats.min(), lats.max())
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            ax.grid(True, alpha=0.3)
+
         # Add colorbar
-        cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
+        cbar = plt.colorbar(im, ax=ax, orientation='horizontal',
                            pad=0.05, fraction=0.046)
         cbar.set_label(data.attrs.get('units', 'Value'))
-        
-        # Set extent
-        ax.set_extent([lons.min(), lons.max(), lats.min(), lats.max()],
-                     ccrs.PlateCarree())
-        
-        # Add gridlines
-        ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5)
         
         # Title
         title = f'{variable}'

@@ -248,11 +248,21 @@ class ClimateIndicesCalculator:
 
             if 'daily_temperature_range_variability' in configured_indices:
                 try:
-                    result = atmos.daily_temperature_range_variability(
-                        tasmin, tasmax, freq='YS'
-                    )
-                    indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result, 'daily_temperature_range_variability')
-                    logger.info("Calculated daily temperature range variability")
+                    # Suppress division warnings for this calculation
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+                        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+
+                        result = atmos.daily_temperature_range_variability(
+                            tasmin, tasmax, freq='YS'
+                        )
+
+                        # Clean up any inf values that might result from division
+                        if result is not None:
+                            result = result.where(~np.isinf(result))
+
+                        indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result, 'daily_temperature_range_variability')
+                        logger.info("Calculated daily temperature range variability")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range_variability: {e}")
 
@@ -881,6 +891,27 @@ class ClimateIndicesCalculator:
             return result_days
         return result
 
+    def _add_cell_methods(self, result: xr.DataArray, method: str = "time: mean") -> xr.DataArray:
+        """
+        Add cell_methods attribute to comply with CF conventions and avoid warnings.
+
+        Parameters:
+        -----------
+        result : xr.DataArray
+            Result data array
+        method : str
+            Cell methods string (default: "time: mean")
+
+        Returns:
+        --------
+        xr.DataArray
+            Data array with cell_methods attribute
+        """
+        if result is not None and hasattr(result, 'attrs'):
+            if 'cell_methods' not in result.attrs:
+                result.attrs['cell_methods'] = method
+        return result
+
     def _convert_output_to_celsius(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
         """
         Convert temperature outputs to Celsius using xclim's built-in conversion.
@@ -902,10 +933,23 @@ class ClimateIndicesCalculator:
 
         try:
             # Use xclim's built-in unit conversion
-            return convert_units_to(result, 'degC')
+            result = convert_units_to(result, 'degC')
         except Exception as e:
             logger.debug(f"Could not convert output units for {index_name}: {e}")
-            return result
+
+        # Add appropriate cell_methods based on index type
+        if 'mean' in index_name or 'tg_' in index_name:
+            result = self._add_cell_methods(result, "time: mean")
+        elif 'max' in index_name or 'tx_' in index_name:
+            result = self._add_cell_methods(result, "time: maximum")
+        elif 'min' in index_name or 'tn_' in index_name:
+            result = self._add_cell_methods(result, "time: minimum")
+        elif any(x in index_name for x in ['days', 'count', 'frost', 'ice', 'tropical']):
+            result = self._add_cell_methods(result, "time: sum")
+        else:
+            result = self._add_cell_methods(result, "time: mean")
+
+        return result
 
     def _validate_variable(self, var: xr.DataArray, expected_name: str) -> bool:
         """

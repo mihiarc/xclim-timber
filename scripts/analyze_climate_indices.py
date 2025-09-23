@@ -8,6 +8,7 @@ import sys
 import logging
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, List, Optional
 import argparse
 
 # Add src to path
@@ -304,6 +305,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    import sys
-    from typing import Dict, List, Optional
     sys.exit(main())
