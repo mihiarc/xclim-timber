@@ -290,22 +290,22 @@ class ClimateIndicesCalculator:
             # Hot days (Tmax > 30°C)
             if 'hot_days' in configured_indices:
                 try:
-                    result = generic.count_level_crossings(
-                        tasmax, thresholds='30 degC', freq='YS', op='>'
-                    )
-                    indices['hot_days'] = self._convert_timedelta_to_days(result, 'hot_days')
-                    logger.info("Calculated hot days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 30°C threshold for hot days
+                        result = atmos.tx_days_above(tasmax, thresh='30 degC', freq='YS')
+                        indices['hot_days'] = self._convert_timedelta_to_days(result, 'hot_days')
+                        logger.info("Calculated hot days")
                 except Exception as e:
                     logger.error(f"Error calculating hot_days: {e}")
 
             # Very hot days (Tmax > 35°C)
             if 'very_hot_days' in configured_indices:
                 try:
-                    result = generic.count_level_crossings(
-                        tasmax, thresholds='35 degC', freq='YS', op='>'
-                    )
-                    indices['very_hot_days'] = self._convert_timedelta_to_days(result, 'very_hot_days')
-                    logger.info("Calculated very hot days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 35°C threshold for very hot days
+                        result = atmos.tx_days_above(tasmax, thresh='35 degC', freq='YS')
+                        indices['very_hot_days'] = self._convert_timedelta_to_days(result, 'very_hot_days')
+                        logger.info("Calculated very hot days")
                 except Exception as e:
                     logger.error(f"Error calculating very_hot_days: {e}")
 
@@ -313,11 +313,11 @@ class ClimateIndicesCalculator:
             # Warm nights (Tmin > 15°C)
             if 'warm_nights' in configured_indices:
                 try:
-                    result = generic.count_level_crossings(
-                        tasmin, thresholds='15 degC', freq='YS', op='>'
-                    )
-                    indices['warm_nights'] = self._convert_timedelta_to_days(result, 'warm_nights')
-                    logger.info("Calculated warm nights")
+                    with suppress_climate_warnings():
+                        # Use tn_days_above with 15°C threshold for warm nights
+                        result = atmos.tn_days_above(tasmin, thresh='15 degC', freq='YS')
+                        indices['warm_nights'] = self._convert_timedelta_to_days(result, 'warm_nights')
+                        logger.info("Calculated warm nights")
                 except Exception as e:
                     logger.error(f"Error calculating warm_nights: {e}")
 
