@@ -180,8 +180,11 @@ class ClimateIndicesCalculator:
             # Summer days (Tmax > 25°C)
             if 'summer_days' in configured_indices:
                 try:
-                    indices['summer_days'] = atmos.summer_days(tasmax, freq='YS')
-                    logger.info("Calculated summer days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 25°C threshold for summer days
+                        result = atmos.tx_days_above(tasmax, thresh='25 degC', freq='YS')
+                        indices['summer_days'] = self._convert_timedelta_to_days(result, 'summer_days')
+                        logger.info("Calculated summer days")
                 except Exception as e:
                     logger.error(f"Error calculating summer_days: {e}")
             
