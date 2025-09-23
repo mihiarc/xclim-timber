@@ -1066,9 +1066,15 @@ class ClimateIndicesCalculator:
             # Check for excessive missing values
             if hasattr(var, 'isnull'):
                 missing_fraction = float(var.isnull().sum()) / var.size
-                if missing_fraction > 0.5:
-                    logger.warning(f"Variable {var.name} has {missing_fraction:.1%} missing values")
+                # For gridded climate data, ~40-50% missing is normal (ocean/water mask)
+                if 0.40 <= missing_fraction <= 0.50:
+                    # Expected ocean masking - only log at debug level
+                    logger.debug(f"Variable {var.name} has {missing_fraction:.1%} missing values (ocean mask)")
+                elif missing_fraction > 0.50:
+                    # Higher than expected even with ocean mask
+                    logger.warning(f"Variable {var.name} has {missing_fraction:.1%} missing values (unexpectedly high)")
                 elif missing_fraction > 0.1:
+                    # Some missing data but not ocean mask levels
                     logger.info(f"Variable {var.name} has {missing_fraction:.1%} missing values")
 
             return True
