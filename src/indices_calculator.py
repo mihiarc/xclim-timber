@@ -169,7 +169,8 @@ class ClimateIndicesCalculator:
             # Ice days (Tmax < 0°C)
             if 'ice_days' in configured_indices:
                 try:
-                    indices['ice_days'] = atmos.ice_days(tasmax, freq='YS')
+                    result = atmos.ice_days(tasmax, freq='YS')
+                    indices['ice_days'] = self._convert_timedelta_to_days(result, 'ice_days')
                     logger.info("Calculated ice days")
                 except Exception as e:
                     logger.error(f"Error calculating ice_days: {e}")
@@ -187,15 +188,17 @@ class ClimateIndicesCalculator:
             # Tropical nights (Tmin > 20°C)
             if 'tropical_nights' in configured_indices:
                 try:
-                    indices['tropical_nights'] = atmos.tropical_nights(tasmin, freq='YS')
+                    result = atmos.tropical_nights(tasmin, freq='YS')
+                    indices['tropical_nights'] = self._convert_timedelta_to_days(result, 'tropical_nights')
                     logger.info("Calculated tropical nights")
                 except Exception as e:
                     logger.error(f"Error calculating tropical_nights: {e}")
-            
+
             # Frost days (Tmin < 0°C)
             if 'frost_days' in configured_indices:
                 try:
-                    indices['frost_days'] = atmos.frost_days(tasmin, freq='YS')
+                    result = atmos.frost_days(tasmin, freq='YS')
+                    indices['frost_days'] = self._convert_timedelta_to_days(result, 'frost_days')
                     logger.info("Calculated frost days")
                 except Exception as e:
                     logger.error(f"Error calculating frost_days: {e}")
@@ -289,9 +292,8 @@ class ClimateIndicesCalculator:
             # Consecutive frost days
             if 'consecutive_frost_days' in configured_indices:
                 try:
-                    indices['consecutive_frost_days'] = atmos.consecutive_frost_days(
-                        tasmin, freq='YS'
-                    )
+                    result = atmos.consecutive_frost_days(tasmin, freq='YS')
+                    indices['consecutive_frost_days'] = self._convert_timedelta_to_days(result, 'consecutive_frost_days')
                     logger.info("Calculated consecutive frost days")
                 except Exception as e:
                     logger.error(f"Error calculating consecutive_frost_days: {e}")
@@ -664,7 +666,8 @@ class ClimateIndicesCalculator:
         # Growing season length
         if 'gsl' in agricultural_indices and tas is not None:
             try:
-                indices['gsl'] = atmos.growing_season_length(tas, freq='YS')
+                result = atmos.growing_season_length(tas, freq='YS')
+                indices['gsl'] = self._convert_timedelta_to_days(result, 'gsl')
                 logger.info("Calculated growing season length")
             except Exception as e:
                 logger.error(f"Error calculating gsl: {e}")
@@ -797,11 +800,70 @@ class ClimateIndicesCalculator:
             Temperature data in target units
         """
         try:
-            # Use xclim's built-in unit conversion - it handles unit detection automatically
+            # Fix common unit naming issues
+            if hasattr(data, 'attrs') and 'units' in data.attrs:
+                current_units = data.attrs['units']
+
+                # Map common variations to standard units
+                unit_map = {
+                    'degrees_celsius': 'degC',
+                    'degrees_Celsius': 'degC',
+                    'celsius': 'degC',
+                    'Celsius': 'degC',
+                    'C': 'degC',
+                    'degrees_fahrenheit': 'degF',
+                    'fahrenheit': 'degF',
+                    'F': 'degF',
+                    'kelvin': 'K',
+                    'Kelvin': 'K'
+                }
+
+                if current_units in unit_map:
+                    data.attrs['units'] = unit_map[current_units]
+                    logger.debug(f"Mapped units from '{current_units}' to '{data.attrs['units']}'")
+
+            # If already in target units, return as-is
+            if hasattr(data, 'attrs') and data.attrs.get('units') == target_units:
+                return data
+
+            # Use xclim's built-in unit conversion
             return convert_units_to(data, target_units)
         except Exception as e:
             logger.warning(f"Could not convert temperature units for {data.name}: {e}")
+            # If conversion fails but data looks like Celsius based on range, set units
+            if hasattr(data, 'attrs'):
+                data_min = float(data.min())
+                data_max = float(data.max())
+                if -100 < data_min < 100 and -100 < data_max < 100:
+                    logger.info(f"Data range ({data_min:.1f} to {data_max:.1f}) suggests Celsius, setting units")
+                    data.attrs['units'] = 'degC'
             return data
+
+    def _convert_timedelta_to_days(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
+        """
+        Convert timedelta64 results to numeric days.
+
+        Parameters:
+        -----------
+        result : xr.DataArray
+            Result data array that may be timedelta64
+        index_name : str
+            Name of the climate index
+
+        Returns:
+        --------
+        xr.DataArray
+            Result converted to numeric days if it was timedelta
+        """
+        if 'timedelta' in str(result.dtype):
+            logger.debug(f"Converting {index_name} from timedelta to numeric days")
+            # Convert from timedelta to float days
+            result_days = result / np.timedelta64(1, 'D')
+            # Preserve attributes but update units
+            result_days.attrs = result.attrs.copy()
+            result_days.attrs['units'] = 'days'
+            return result_days
+        return result
 
     def _convert_output_to_celsius(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
         """

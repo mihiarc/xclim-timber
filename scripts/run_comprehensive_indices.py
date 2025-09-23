@@ -2,17 +2,19 @@
 """
 Run comprehensive climate indices calculation for 2001-2024.
 Uses 1981-2000 as baseline period for percentile-based indices.
+Now uses streaming pipeline for memory-efficient processing.
 """
 
 import sys
 from pathlib import Path
 from datetime import datetime
 import logging
+import argparse
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from pipeline import ClimateDataPipeline
+from pipeline_streaming import StreamingClimatePipeline
 from config import Config
 import xarray as xr
 
@@ -64,44 +66,67 @@ def validate_data_coverage():
         return False
 
 
-def estimate_processing_requirements():
-    """Estimate memory and time requirements."""
+def estimate_processing_requirements(chunk_years=1):
+    """
+    Estimate memory and time requirements for streaming processing.
+
+    Parameters:
+    -----------
+    chunk_years : int
+        Number of years to process per chunk
+    """
 
     print("\n" + "=" * 80)
-    print("PROCESSING REQUIREMENTS")
+    print("STREAMING PROCESSING REQUIREMENTS")
     print("=" * 80)
 
     # Dataset dimensions
-    n_days = 365 * 24  # 24 years
+    n_days_total = 365 * 24  # 24 years total
+    n_days_chunk = 365 * chunk_years  # days per chunk
     n_lat = 621
     n_lon = 1405
     n_indices = 42
+    n_chunks = 24 // chunk_years
 
-    # Memory estimates (rough)
-    data_points = n_days * n_lat * n_lon
-    memory_per_index = (data_points * 4) / 1e9  # 4 bytes per float32, to GB
+    # Memory estimates for STREAMING approach
+    data_points_chunk = n_days_chunk * n_lat * n_lon
+    memory_per_chunk = (data_points_chunk * 4) / 1e9  # 4 bytes per float32, to GB
 
     print(f"\nDataset dimensions:")
-    print(f"  Time points: {n_days:,} days (24 years)")
+    print(f"  Total period: 24 years ({n_days_total:,} days)")
     print(f"  Spatial points: {n_lat:,} × {n_lon:,} = {n_lat*n_lon:,}")
-    print(f"  Total data points: {data_points:,}")
+    print(f"  Total data points: {n_days_total * n_lat * n_lon:,}")
 
-    print(f"\nMemory estimates:")
-    print(f"  Per index: ~{memory_per_index:.1f} GB")
-    print(f"  All indices: ~{memory_per_index * n_indices:.1f} GB")
-    print(f"  With chunking: ~8-16 GB RAM required")
+    print(f"\n✨ STREAMING APPROACH:")
+    print(f"  Chunk size: {chunk_years} year(s) = {n_days_chunk:,} days")
+    print(f"  Number of chunks: {n_chunks}")
+    print(f"  Data points per chunk: {data_points_chunk:,}")
+
+    print(f"\nMemory usage (STREAMING):")
+    print(f"  Per chunk: ~{memory_per_chunk:.1f} GB")
+    print(f"  Peak RAM usage: ~{memory_per_chunk * 1.5:.1f} GB (including overhead)")
+    print(f"  Traditional approach: ~134 GB (all data in memory)")
+    print(f"  💚 Memory savings: {100 * (1 - memory_per_chunk * 1.5 / 134):.0f}% reduction")
 
     print(f"\nProcessing estimates:")
-    print(f"  Indices to calculate: {n_indices}")
-    print(f"  Estimated time: 2-4 hours (with 4 workers)")
-    print(f"  Output size: ~10-20 GB (compressed)")
+    print(f"  Indices per chunk: {n_indices}")
+    print(f"  Time per chunk: ~{5 * chunk_years}-{10 * chunk_years} minutes")
+    print(f"  Total time: ~{n_chunks * 5 * chunk_years}-{n_chunks * 10 * chunk_years} minutes")
+    print(f"  Output: {n_chunks} chunk files + 1 combined file (~10-20 GB total)")
 
 
-def run_comprehensive_processing():
-    """Execute the comprehensive climate indices calculation."""
+def run_comprehensive_processing(chunk_years=1):
+    """
+    Execute the comprehensive climate indices calculation using streaming approach.
+
+    Parameters:
+    -----------
+    chunk_years : int
+        Number of years to process per chunk (default: 1)
+    """
 
     print("\n" + "=" * 80)
-    print("STARTING COMPREHENSIVE PROCESSING")
+    print("STARTING STREAMING COMPREHENSIVE PROCESSING")
     print("=" * 80)
 
     config_path = Path(__file__).parent.parent / 'configs' / 'config_comprehensive_2001_2024.yaml'
@@ -114,86 +139,161 @@ def run_comprehensive_processing():
     print("Processing period: 2001-2024")
     print("Baseline period: 1981-2000")
     print("Indices: 42+ across 8 categories")
+    print(f"⚡ Streaming mode: {chunk_years}-year chunks")
 
-    # Initialize pipeline
+    # Initialize streaming pipeline
     print("\n" + "-" * 40)
-    print("Initializing pipeline...")
+    print("Initializing streaming pipeline...")
 
     try:
-        pipeline = ClimateDataPipeline(str(config_path), verbose=True)
+        # Use the new streaming pipeline
+        pipeline = StreamingClimatePipeline(str(config_path), chunk_years=chunk_years)
 
-        # Run processing
+        # Run streaming processing
         print("\n" + "-" * 40)
-        print("Starting calculation...")
+        print("Starting streaming calculation...")
         print("Monitor progress at: http://localhost:8787")
-        print("\nThis will take 2-4 hours. Press Ctrl+C to cancel.\n")
+        print(f"\nProcessing {24 // chunk_years} chunks sequentially...")
+        print("Each chunk will be saved immediately to conserve memory.\n")
 
         start_time = datetime.now()
 
-        # Process all configured variables
-        pipeline.run(['temperature', 'precipitation', 'humidity'])
+        # Process all configured variables with streaming
+        results = pipeline.run_streaming(
+            variables=['temperature', 'precipitation', 'humidity'],
+            start_year=2001,
+            end_year=2024
+        )
 
         elapsed = datetime.now() - start_time
 
         print("\n" + "=" * 80)
-        print("PROCESSING COMPLETE")
+        print("STREAMING PROCESSING COMPLETE")
         print("=" * 80)
         print(f"Total time: {elapsed}")
-        print(f"Output location: {pipeline.config.output_path}")
+        print(f"Status: {results.get('status', 'unknown')}")
 
-        # Get status
-        status = pipeline.get_status()
-        print(f"\nProcessed variables: {len(status['datasets_processed'])}")
-        print(f"Calculated indices: {len(status['indices_calculated'])}")
+        # Handle different result structures based on success/failure
+        if results.get('status') == 'success':
+            print(f"Chunks processed: {results.get('chunks_processed', 0)}/{results.get('total_chunks', 0)}")
+            print(f"Output location: {results.get('output_path', 'unknown')}")
 
-        return True
+            print(f"\n✓ Chunk files created:")
+            chunk_files = results.get('chunk_files', [])
+            for chunk_file in chunk_files[:5]:  # Show first 5
+                print(f"  - {Path(chunk_file).name}")
+            if len(chunk_files) > 5:
+                print(f"  ... and {len(chunk_files) - 5} more")
+
+            print(f"\n✓ Combined output: {results.get('output_path', '.')}/combined_indices.nc")
+
+        elif results.get('status') == 'failed':
+            # Handle failure case
+            error_msg = results.get('error', 'Unknown error')
+            print(f"\n❌ Processing failed: {error_msg}")
+
+            if 'No stores found' in error_msg:
+                print("\n📍 Troubleshooting tips:")
+                print("  1. Check that Zarr stores exist at the configured paths")
+                print("  2. Verify the data path in config_comprehensive_2001_2024.yaml")
+                print("  3. Ensure the Zarr stores contain the required variables")
+                print("\n  Expected store locations:")
+                print("    - /media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature")
+                print("    - /media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation")
+                print("    - /media/mihiarc/SSD4TB/data/PRISM/prism.zarr/humidity")
+
+        # Clean up
+        pipeline.close()
+
+        return results.get('status') == 'success'
 
     except Exception as e:
         print(f"\n✗ Processing failed: {e}")
         import traceback
         traceback.print_exc()
+        if 'pipeline' in locals():
+            pipeline.close()
         return False
 
 
 def main():
-    """Main execution function."""
+    """Main execution function with command-line argument support."""
+
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Run comprehensive climate indices calculation with streaming processing"
+    )
+    parser.add_argument(
+        '--chunk-years', type=int, default=1,
+        help='Number of years to process per chunk (default: 1, recommended: 1-2)'
+    )
+    parser.add_argument(
+        '--skip-validation', action='store_true',
+        help='Skip data validation step (use with caution)'
+    )
+    parser.add_argument(
+        '--yes', '-y', action='store_true',
+        help='Skip confirmation prompt'
+    )
+
+    args = parser.parse_args()
 
     print("\n" + "=" * 80)
     print("COMPREHENSIVE CLIMATE INDICES PROCESSOR")
+    print("⚡ Now with Zarr Streaming Technology")
     print("=" * 80)
     print("Processing: 2001-2024 | Baseline: 1981-2000")
     print("Indices: 42+ from WMO standards")
+    print(f"Chunk size: {args.chunk_years} year(s) per chunk")
     print("=" * 80)
 
     # Step 1: Validate data
-    if not validate_data_coverage():
-        print("\n⚠ Please ensure PRISM data is available")
-        print("Update the path in config_comprehensive_2001_2024.yaml")
-        return 1
+    if not args.skip_validation:
+        if not validate_data_coverage():
+            print("\n⚠ Please ensure PRISM data is available")
+            print("Update the path in config_comprehensive_2001_2024.yaml")
+            print("Or use --skip-validation to bypass this check")
+            return 1
+    else:
+        print("\n⚠ Skipping data validation as requested")
 
     # Step 2: Show requirements
-    estimate_processing_requirements()
+    estimate_processing_requirements(args.chunk_years)
 
     # Step 3: Confirm with user
-    print("\n" + "=" * 80)
-    response = input("\nProceed with processing? (y/n): ")
+    if not args.yes:
+        print("\n" + "=" * 80)
+        print(f"\n📊 STREAMING CONFIGURATION:")
+        print(f"  • Chunk size: {args.chunk_years} year(s)")
+        print(f"  • Number of chunks: {24 // args.chunk_years}")
+        print(f"  • Memory usage: ~{5.6 * args.chunk_years:.1f} GB per chunk")
+        print(f"  • Traditional memory: ~134 GB (all at once)")
 
-    if response.lower() != 'y':
-        print("Processing cancelled.")
-        return 0
+        response = input("\nProceed with streaming processing? (y/n): ")
 
-    # Step 4: Run processing
-    success = run_comprehensive_processing()
+        if response.lower() != 'y':
+            print("Processing cancelled.")
+            return 0
+
+    # Step 4: Run streaming processing
+    success = run_comprehensive_processing(chunk_years=args.chunk_years)
 
     if success:
-        print("\n✓ All processing completed successfully!")
+        print("\n✓ All streaming processing completed successfully!")
+        print("\n🎉 BENEFITS OF STREAMING APPROACH:")
+        print(f"  • Memory saved: ~{134 - 5.6 * args.chunk_years:.0f} GB")
+        print("  • Fault tolerance: Each year saved independently")
+        print("  • Progress visibility: See results as they complete")
+
         print("\nNext steps:")
-        print("1. Check outputs in ./outputs/comprehensive_2001_2024/")
-        print("2. Validate indices using quality control scripts")
-        print("3. Generate summary statistics and visualizations")
+        print("1. Check chunk outputs in ./outputs/")
+        print("2. Verify combined_indices.nc contains all years")
+        print("3. Validate indices using quality control scripts")
+        print("4. Generate summary statistics and visualizations")
         return 0
     else:
         print("\n✗ Processing encountered errors. Check logs for details.")
+        print("Tip: Try with --chunk-years 2 for faster processing if you have more RAM")
         return 1
 
 
