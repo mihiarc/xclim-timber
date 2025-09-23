@@ -338,24 +338,33 @@ class StreamingClimatePipeline:
         # Get all chunk files
         chunk_files = [c['file'] for c in chunks]
 
-        # Open all chunks lazily
+        # Open all chunks lazily with proper resource management
         datasets = []
-        for file in sorted(chunk_files):
-            ds = xr.open_dataset(file, chunks='auto')
-            datasets.append(ds)
+        try:
+            for file in sorted(chunk_files):
+                ds = xr.open_dataset(file, chunks='auto')
+                datasets.append(ds)
 
-        # Concatenate along time dimension
-        combined = xr.concat(datasets, dim='time')
+            # Concatenate along time dimension
+            combined = xr.concat(datasets, dim='time')
 
-        # Save combined output
-        output_file = output_path / 'combined_indices.nc'
+            # Save combined output
+            output_file = output_path / 'combined_indices.nc'
 
-        # Save with compression
-        encoding = {var: {'zlib': True, 'complevel': 4}
-                   for var in combined.data_vars}
+            # Save with compression
+            encoding = {var: {'zlib': True, 'complevel': 4}
+                       for var in combined.data_vars}
 
-        combined.to_netcdf(output_file, engine='netcdf4', encoding=encoding)
-        logger.info(f"Saved combined output to {output_file}")
+            combined.to_netcdf(output_file, engine='netcdf4', encoding=encoding)
+            logger.info(f"Saved combined output to {output_file}")
+
+        finally:
+            # Ensure all datasets are closed to free resources
+            for ds in datasets:
+                try:
+                    ds.close()
+                except:
+                    pass  # Ignore errors when closing
 
     def close(self):
         """Clean up resources."""

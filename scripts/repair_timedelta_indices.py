@@ -110,16 +110,34 @@ def repair_file(input_file, output_file=None, backup=True):
     ds_copy = ds.copy(deep=True)
     ds.close()
 
-    # Save to a temporary file first, then rename
-    temp_path = output_path.with_suffix('.nc.tmp')
-    ds_copy.to_netcdf(temp_path, encoding=encoding, engine='netcdf4')
-    ds_copy.close()
-
-    # Replace original with repaired version
+    # Use atomic write to prevent corruption on failure
+    import tempfile
     import os
-    if output_path.exists():
-        os.remove(output_path)
-    os.rename(temp_path, output_path)
+
+    # Create temporary file in same directory for atomic rename
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.nc.tmp',
+                                         dir=output_path.parent,
+                                         prefix='repair_')
+    try:
+        os.close(temp_fd)  # Close the file descriptor
+
+        # Save to temporary file
+        ds_copy.to_netcdf(temp_path, encoding=encoding, engine='netcdf4')
+        ds_copy.close()
+
+        # Atomic rename (on POSIX systems)
+        # This ensures the file is either fully written or not written at all
+        if output_path.exists():
+            # Use replace for atomic operation
+            Path(temp_path).replace(output_path)
+        else:
+            Path(temp_path).rename(output_path)
+
+    except Exception as e:
+        # Clean up temp file on error
+        if Path(temp_path).exists():
+            Path(temp_path).unlink()
+        raise e
 
     print(f"\nSummary:")
     print(f"  Fixed: {fixed_count} variables")

@@ -859,6 +859,22 @@ class ClimateIndicesCalculator:
             logger.debug(f"Converting {index_name} from timedelta to numeric days")
             # Convert from timedelta to float days
             result_days = result / np.timedelta64(1, 'D')
+
+            # Validate converted values for day-count indices
+            day_count_indices = ['frost_days', 'ice_days', 'tropical_nights',
+                                'consecutive_frost_days', 'summer_days', 'hot_days',
+                                'very_hot_days', 'warm_nights']
+
+            if index_name in day_count_indices:
+                # Check for values outside valid range
+                invalid_mask = (result_days < 0) | (result_days > 366)  # 366 for leap years
+                if invalid_mask.any():
+                    invalid_count = int(invalid_mask.sum())
+                    logger.warning(f"{index_name}: {invalid_count} values outside 0-366 day range")
+                    # Clip to valid range
+                    result_days = result_days.clip(0, 366)
+                    logger.info(f"{index_name}: Clipped to valid range [0, 366]")
+
             # Preserve attributes but update units
             result_days.attrs = result.attrs.copy()
             result_days.attrs['units'] = 'days'
