@@ -10,16 +10,18 @@ The xclim-timber pipeline (now Zarr-exclusive) supports configurable baseline pe
 
 ### Default Settings
 
-The pipeline uses the WMO standard baseline period by default:
+The pipeline uses a configurable baseline period (default: 1981-2000 for PRISM data compatibility):
 
 ```yaml
 indices:
   # Baseline period for percentile calculations
   baseline_period:
-    start: 1991  # Updated WMO standard
-    end: 2020
+    start: 1981  # Configurable - using 1981-2000 for PRISM
+    end: 2000
   use_baseline_for_percentiles: true
 ```
+
+**Note**: The baseline period should match your data availability. PRISM data starts in 1981, so we use 1981-2000 as our 20-year baseline.
 
 ### Affected Indices
 
@@ -37,18 +39,27 @@ When `use_baseline_for_percentiles` is enabled, the following indices use the ba
 
 ## How It Works
 
-### 1. Baseline Period Extraction
-When calculating percentile indices, the system:
-1. Extracts data for the baseline period (e.g., 1991-2020)
-2. Validates data coverage (warns if <80% complete)
-3. Calculates percentile thresholds from baseline data only
+### 1. Pre-calculation of Baseline Percentiles
+**IMPORTANT**: Percentile indices require the full baseline period (20+ years) to calculate proper day-of-year thresholds. This must be done BEFORE processing data in chunks:
 
-### 2. Index Calculation
-The percentile thresholds from the baseline period are then applied to the entire time series:
-- **Baseline period (e.g., 1991-2020)**: Should show ~10% exceedance for 90th percentile indices
-- **Recent period (2021-present)**: May show higher exceedance due to climate change
+```bash
+# Run once to generate baseline percentiles
+python src/calculate_baseline_percentiles.py
+# Creates: data/baselines/baseline_percentiles_1981_2000.nc
+```
 
-### 3. Climate Change Signal Detection
+### 2. Streaming Pipeline Integration
+The pre-calculated percentiles can then be used when processing data in yearly chunks:
+- Load the baseline percentiles file
+- Apply thresholds to each year's data independently
+- Count exceedances for that year
+
+### 3. Index Calculation
+The percentile thresholds from the baseline period are applied to any time period:
+- **Baseline period (1981-2000)**: Should show ~10% exceedance for 90th percentile indices
+- **Recent period (2001-present)**: May show higher exceedance due to climate change
+
+### 4. Climate Change Signal Detection
 This approach enables detection of climate change signals:
 - If recent periods show >10% exceedance of the baseline 90th percentile, it indicates warming
 - If recent periods show <10% exceedance of the baseline 10th percentile, it indicates fewer cold extremes
@@ -63,8 +74,8 @@ from src.indices_calculator import ClimateIndicesCalculator
 
 # Create configuration with baseline period
 config = Config('configs/config_template.yaml')
-config.set('indices.baseline_period.start', 1991)
-config.set('indices.baseline_period.end', 2020)
+config.set('indices.baseline_period.start', 1981)
+config.set('indices.baseline_period.end', 2000)
 config.set('indices.use_baseline_for_percentiles', True)
 
 # Initialize calculator with Zarr data
@@ -94,15 +105,15 @@ data:
       - '*tas*.zarr'
 
 indices:
-  # WMO standard baseline period
+  # Baseline period (using 1981-2000 for PRISM)
   baseline_period:
-    start: 1991  # Updated 30-year normal
-    end: 2020
+    start: 1981  # 20-year baseline
+    end: 2000
   use_baseline_for_percentiles: true
 
   temperature:
-    - tx90p  # Will use 1991-2020 for percentile calculation
-    - tn10p  # Will use 1991-2020 for percentile calculation
+    - tx90p  # Will use 1981-2000 for percentile calculation
+    - tn10p  # Will use 1981-2000 for percentile calculation
     - tg_mean  # Not affected (not a percentile index)
 ```
 
@@ -132,26 +143,46 @@ Using a fixed baseline period enables:
 - Quantification of changes in climate variability
 - Comparison across different time periods and regions
 
-## Known Limitations
+## Implementation Details
 
-### Current Implementation
-1. **Simplified Percentile Calculation**:
-   - Uses simple quantile calculation over entire baseline period
-   - Does not implement bootstrap or day-of-year percentiles as per full WMO guidelines
+### Pre-calculated Baseline Percentiles
 
-2. **No Seasonal Adjustment**:
-   - Percentiles calculated across all days in baseline period
-   - Does not account for seasonal variations in percentile thresholds
+The pipeline now uses **pre-calculated day-of-year percentiles** following WMO guidelines:
 
-3. **Fixed Percentile Values**:
-   - Uses standard percentiles (10th, 90th, 95th, 99th)
-   - Cannot configure custom percentile values
+1. **One-time Calculation**: Run `calculate_baseline_percentiles.py` to generate baseline thresholds
+2. **Day-of-Year Percentiles**: Calculates separate thresholds for each day of the year (366 values)
+3. **Proper Seasonal Adjustment**: Accounts for seasonal temperature variations
+4. **Efficient Processing**: Pre-calculated thresholds enable fast processing of any time period
 
-### Future Enhancements
-- Implement bootstrap methodology for robust percentile estimation
-- Add day-of-year percentile calculation for seasonal adjustment
-- Support multiple baseline periods for comparison studies
-- Add percentile interpolation methods
+### Calculation Process
+
+```bash
+# Step 1: Calculate baseline percentiles (one-time, ~10-20 minutes)
+python src/calculate_baseline_percentiles.py
+
+# This creates: data/baselines/baseline_percentiles_1981_2000.nc
+# Contains 3D arrays (lat × lon × dayofyear) for:
+#   - tx90p_threshold: 90th percentile of daily max temperature
+#   - tx10p_threshold: 10th percentile of daily max temperature
+#   - tn90p_threshold: 90th percentile of daily min temperature
+#   - tn10p_threshold: 10th percentile of daily min temperature
+```
+
+### Key Features
+
+1. **Day-of-Year Percentiles** ✅:
+   - Implements proper WMO methodology
+   - 5-day window around each calendar day for robust estimates
+   - Accounts for seasonal temperature cycles
+
+2. **Memory Efficient**:
+   - Pre-calculation allows processing data in small chunks
+   - Streaming pipeline can process year-by-year using pre-calculated thresholds
+
+3. **Quality Assured**:
+   - Validated temperature ranges for all percentiles
+   - Ensures 90th > 10th percentiles everywhere
+   - ~45% missing data matches PRISM ocean mask
 
 ## Testing
 
@@ -171,8 +202,8 @@ This test:
 4. Demonstrates climate change signal detection
 
 ### Expected Results
-- Baseline period (1991-2020): ~10% exceedance
-- Recent period (2021-present): Higher exceedance indicates warming
+- Baseline period (1981-2000): ~10% exceedance
+- Recent period (2001-present): Higher exceedance indicates warming
 - Magnitude depends on location and data source
 
 ## References
