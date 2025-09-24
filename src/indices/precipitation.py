@@ -40,17 +40,18 @@ class PrecipitationIndicesCalculator:
         pr = ds.pr
 
         # Basic precipitation statistics
+        # Total precipitation from wet days (≥1mm)
         indices['prcptot'] = self._safe_calc(
-            atmos.prcptot, pr, thresh='1 mm/day', freq=freq
+            atmos.wet_precip_accumulation, pr, thresh='1 mm/day', freq=freq
         )
         indices['rx1day'] = self._safe_calc(
             atmos.max_1day_precipitation_amount, pr, freq=freq
         )
         indices['rx5day'] = self._safe_calc(
-            atmos.max_5day_precipitation_amount, pr, freq=freq
+            atmos.max_n_day_precipitation_amount, pr, window=5, freq=freq
         )
         indices['sdii'] = self._safe_calc(
-            atmos.simple_daily_intensity_index, pr, thresh='1 mm/day', freq=freq
+            atmos.daily_pr_intensity, pr, thresh='1 mm/day', freq=freq
         )
 
         # Consecutive precipitation events
@@ -63,10 +64,10 @@ class PrecipitationIndicesCalculator:
 
         # Precipitation intensity events
         indices['r10mm'] = self._safe_calc(
-            atmos.days_with_pr, pr, thresh='10 mm/day', freq=freq
+            atmos.days_over_precip_thresh, pr, thresh='10 mm/day', freq=freq
         )
         indices['r20mm'] = self._safe_calc(
-            atmos.days_with_pr, pr, thresh='20 mm/day', freq=freq
+            atmos.days_over_precip_thresh, pr, thresh='20 mm/day', freq=freq
         )
 
         # Percentile-based indices (require baseline calculation)
@@ -136,5 +137,6 @@ class PrecipitationIndicesCalculator:
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error calculating {func.__name__}: {e}")
+            func_name = getattr(func, '__name__', str(func))
+            logger.error(f"Error calculating {func_name}: {e}")
             return None
