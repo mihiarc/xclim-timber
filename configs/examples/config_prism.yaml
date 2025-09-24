@@ -1,0 +1,143 @@
+# PRISM Climate Data Configuration
+# For processing high-resolution US climate data (1981-2024)
+
+# Data paths
+data:
+  input_path: /media/mihiarc/SSD4TB/data/PRISM
+  output_path: ./outputs/prism_indices
+  log_path: ./logs
+
+  # PRISM Zarr store organization
+  zarr_stores:
+    temperature:
+      - 'prism.zarr/temperature'  # Contains tmin, tmax, tmean
+    precipitation:
+      - 'prism.zarr/precipitation'  # Contains ppt (precipitation)
+    humidity:
+      - 'prism.zarr/humidity'  # Contains tdmean, vpdmax, vpdmin
+
+# Processing settings
+processing:
+  temperature_units: degC  # PRISM data already in Celsius
+
+  # Optimal chunk sizes for PRISM's 621x1405 spatial grid
+  chunk_size:
+    time: 365  # Process one year at a time
+    lat: 100   # ~100 points per chunk
+    lon: 140   # ~140 points per chunk
+
+  # Zarr-specific optimizations
+  zarr:
+    consolidated: false  # PRISM uses Zarr v3, no consolidation needed
+    parallel_reads: true
+
+  # PRISM dataset specifics
+  dataset_info:
+    spatial_resolution: 4km  # ~4km grid cells
+    temporal_resolution: daily
+    coverage: Continental US
+    time_range: [1981-01-01, 2024-12-31]
+    lat_range: [24.06, 49.90]  # Continental US
+    lon_range: [-125.02, -66.52]
+
+# Climate indices to calculate
+indices:
+  # Baseline period for percentile calculations
+  baseline_period:
+    start: 1991  # Updated 30-year normal
+    end: 2020
+
+  temperature:
+    # Basic statistics
+    - tg_mean  # Annual mean temperature
+    - tx_max   # Annual maximum temperature
+    - tn_min   # Annual minimum temperature
+    - daily_temperature_range
+
+    # Threshold counts
+    - frost_days       # Days with tmin < 0°C
+    - ice_days         # Days with tmax < 0°C
+    - summer_days      # Days with tmax > 25°C
+    - hot_days         # Days with tmax > 30°C
+    - very_hot_days    # Days with tmax > 35°C
+    - tropical_nights  # Nights with tmin > 20°C
+
+    # Degree days
+    - growing_degree_days
+    - heating_degree_days
+    - cooling_degree_days
+
+    # Extremes
+    - tx90p  # Warm days
+    - tn10p  # Cool nights
+    - warm_spell_duration_index
+    - cold_spell_duration_index
+
+  precipitation:
+    # Totals and extremes
+    - prcptot  # Total precipitation
+    - rx1day   # Max 1-day precipitation
+    - rx5day   # Max 5-day precipitation
+    - sdii     # Simple daily intensity index
+
+    # Dry/wet periods
+    - cdd      # Consecutive dry days
+    - cwd      # Consecutive wet days
+
+    # Heavy precipitation
+    - r10mm    # Days >= 10mm
+    - r20mm    # Days >= 20mm
+    - r95p     # Very wet days
+    - r99p     # Extremely wet days
+
+  humidity:
+    # Vapor pressure deficit indices
+    - mean_vapor_pressure_deficit
+    - extreme_vpd_days  # Days with VPD > 3.0 kPa
+
+    # Dew point indices
+    - dewpoint_depression
+    - humid_days  # Days with high humidity
+
+  agricultural:
+    # Growing season metrics
+    - gsl  # Growing season length
+    - first_frost_date
+    - last_frost_date
+    - frost_free_period
+
+    # Drought indices
+    - spi_3   # 3-month SPI
+    - spi_6   # 6-month SPI
+    - spei_3  # 3-month SPEI (if ET data available)
+
+# Output settings
+output:
+  format: netcdf
+  save_preprocessed: false
+
+  # Output organization
+  organize_by: year  # Create annual files
+
+  compression:
+    complevel: 4
+    engine: h5netcdf
+
+  # Metadata
+  metadata:
+    source: "PRISM Climate Group, Oregon State University"
+    dataset: "PRISM 4km Daily"
+    processing: "xclim-timber pipeline"
+    version: "2.0-zarr"
+
+# Performance settings
+performance:
+  # Dask configuration
+  dask:
+    n_workers: 4
+    threads_per_worker: 2
+    memory_limit: '4GB'
+
+  # Processing optimizations
+  parallel_indices: true
+  cache_baseline: true  # Cache baseline period for percentile calculations

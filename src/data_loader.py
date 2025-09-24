@@ -1,15 +1,13 @@
 """
-Data loader module for climate raster data - CLEAN MINIMAL ZARR SUPPORT.
-Handles loading of GeoTIFF, NetCDF, and Zarr files from external drives.
+Data loader module for climate data - Zarr-exclusive implementation.
+Optimized for loading climate data from Zarr stores on external drives.
 """
 
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-import warnings
 
 import xarray as xr
-import rioxarray as rxr
 import numpy as np
 from tqdm import tqdm
 
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClimateDataLoader:
-    """Load and manage climate raster data from various formats."""
+    """Load and manage climate data from Zarr stores."""
 
     def __init__(self, config: 'Config'):
         """
@@ -35,202 +33,90 @@ class ClimateDataLoader:
     def scan_directory(self, path: Union[str, Path],
                       patterns: Optional[List[str]] = None) -> List[Path]:
         """
-        Scan directory for climate data files.
+        Scan directory for Zarr stores.
 
         Parameters:
         -----------
         path : str or Path
             Directory to scan
         patterns : list of str, optional
-            File patterns to match (e.g., ['*.tif', '*.nc'])
+            Patterns to match (default: ['*.zarr'])
 
         Returns:
         --------
         List[Path]
-            List of found file paths
+            List of found Zarr store paths
         """
         path = Path(path)
         if not path.exists():
             logger.warning(f"Path {path} does not exist")
             return []
 
-        files = []
+        stores = []
         if patterns is None:
-            # Added *.zarr to default patterns
-            patterns = ['*.tif', '*.tiff', '*.nc', '*.nc4', '*.netcdf', '*.zarr']
+            patterns = ['*.zarr']
 
         for pattern in patterns:
-            files.extend(path.rglob(pattern))
+            stores.extend(path.rglob(pattern))
 
-        logger.info(f"Found {len(files)} files in {path}")
-        return sorted(files)
+        # Also find directories containing .zarray (Zarr stores without .zarr extension)
+        for item in path.rglob('*'):
+            if item.is_dir() and (item / '.zarray').exists():
+                stores.append(item)
 
-    def load_geotiff(self, filepath: Union[str, Path],
-                     chunks: Optional[Dict] = None) -> xr.Dataset:
-        """
-        Load GeoTIFF file using rioxarray.
+        logger.info(f"Found {len(stores)} Zarr stores in {path}")
+        return sorted(list(set(stores)))
 
-        Parameters:
-        -----------
-        filepath : str or Path
-            Path to GeoTIFF file
-        chunks : dict, optional
-            Chunk sizes for dask
-
-        Returns:
-        --------
-        xr.Dataset
-            Loaded dataset
-        """
-        filepath = Path(filepath)
-        logger.info(f"Loading GeoTIFF: {filepath}")
-
-        try:
-            # Open with rioxarray
-            ds = rxr.open_rasterio(filepath, chunks=chunks or 'auto')
-
-            # Convert to dataset if it's a DataArray
-            if isinstance(ds, xr.DataArray):
-                var_name = filepath.stem.split('_')[0] if '_' in filepath.stem else 'data'
-                ds = ds.to_dataset(name=var_name)
-
-            # Ensure CRS is set
-            if not ds.rio.crs:
-                logger.warning(f"No CRS found in {filepath}, setting to EPSG:4326")
-                ds = ds.rio.write_crs('EPSG:4326')
-
-            # Standardize dimension names
-            ds = self._standardize_dims(ds)
-
-            return ds
-
-        except Exception as e:
-            logger.error(f"Error loading GeoTIFF {filepath}: {e}")
-            raise
-
-    def load_netcdf(self, filepath: Union[str, Path],
-                    chunks: Optional[Dict] = None) -> xr.Dataset:
-        """
-        Load NetCDF file.
-
-        Parameters:
-        -----------
-        filepath : str or Path
-            Path to NetCDF file
-        chunks : dict, optional
-            Chunk sizes for dask
-
-        Returns:
-        --------
-        xr.Dataset
-            Loaded dataset
-        """
-        filepath = Path(filepath)
-        logger.info(f"Loading NetCDF: {filepath}")
-
-        try:
-            # Use auto chunking for memory efficiency
-            if chunks is None:
-                chunks = 'auto'
-
-            # Open with xarray
-            ds = xr.open_dataset(filepath, chunks=chunks, engine='netcdf4')
-
-            # Standardize dimension names
-            ds = self._standardize_dims(ds)
-
-            # Check for CRS information
-            if hasattr(ds, 'rio') and not ds.rio.crs:
-                # Try to infer CRS from attributes
-                crs = self._infer_crs(ds)
-                if crs:
-                    ds = ds.rio.write_crs(crs)
-
-            return ds
-
-        except Exception as e:
-            logger.error(f"Error loading NetCDF {filepath}: {e}")
-            raise
-
-    def load_zarr(self, filepath: Union[str, Path],
-                  chunks: Optional[Dict] = None) -> xr.Dataset:
+    def load_zarr(self, store_path: Union[str, Path],
+                  chunks: Optional[Dict] = None,
+                  consolidated: bool = True) -> xr.Dataset:
         """
         Load local Zarr store.
 
         Parameters:
         -----------
-        filepath : str or Path
+        store_path : str or Path
             Path to local Zarr store
         chunks : dict, optional
             Chunk sizes for dask (if None, uses Zarr's native chunks)
+        consolidated : bool, default True
+            Whether to use consolidated metadata for faster loading
 
         Returns:
         --------
         xr.Dataset
             Loaded dataset
         """
-        filepath = Path(filepath)
-        logger.info(f"Loading Zarr store: {filepath}")
+        store_path = Path(store_path)
+        logger.info(f"Loading Zarr store: {store_path}")
 
         try:
-            # Simple loading with sensible defaults
-            # consolidated=True is faster for reading metadata
-            ds = xr.open_zarr(filepath, chunks=chunks, consolidated=True)
+            # Load with optimized settings
+            ds = xr.open_zarr(store_path, chunks=chunks, consolidated=consolidated)
 
             # Standardize dimension names
             ds = self._standardize_dims(ds)
 
-            # Check for CRS if rioxarray is available
-            if hasattr(ds, 'rio') and not ds.rio.crs:
-                crs = self._infer_crs(ds)
-                if crs:
-                    ds = ds.rio.write_crs(crs)
+            # Store metadata about the source
+            ds.attrs['source_format'] = 'zarr'
+            ds.attrs['source_path'] = str(store_path)
 
             return ds
 
         except Exception as e:
-            logger.error(f"Error loading Zarr store {filepath}: {e}")
+            logger.error(f"Error loading Zarr store {store_path}: {e}")
             raise
 
-    def load_file(self, filepath: Union[str, Path],
-                  chunks: Optional[Dict] = None) -> xr.Dataset:
+    def load_multiple_stores(self, store_paths: List[Union[str, Path]],
+                            concat_dim: str = 'time',
+                            chunks: Optional[Dict] = None) -> xr.Dataset:
         """
-        Load a climate data file (auto-detect format).
+        Load and concatenate multiple Zarr stores.
 
         Parameters:
         -----------
-        filepath : str or Path
-            Path to file
-        chunks : dict, optional
-            Chunk sizes for dask
-
-        Returns:
-        --------
-        xr.Dataset
-            Loaded dataset
-        """
-        filepath = Path(filepath)
-
-        if filepath.suffix.lower() in ['.tif', '.tiff']:
-            return self.load_geotiff(filepath, chunks)
-        elif filepath.suffix.lower() in ['.nc', '.nc4', '.netcdf']:
-            return self.load_netcdf(filepath, chunks)
-        elif filepath.suffix.lower() == '.zarr' or (filepath.is_dir() and (filepath / '.zarray').exists()):
-            # Check if it's a Zarr store (either .zarr extension or contains .zarray)
-            return self.load_zarr(filepath, chunks)
-        else:
-            raise ValueError(f"Unsupported file format: {filepath.suffix}")
-
-    def load_multiple_files(self, filepaths: List[Union[str, Path]],
-                           concat_dim: str = 'time',
-                           chunks: Optional[Dict] = None) -> xr.Dataset:
-        """
-        Load and concatenate multiple files.
-
-        Parameters:
-        -----------
-        filepaths : list of paths
-            Paths to files to load
+        store_paths : list of paths
+            Paths to Zarr stores to load
         concat_dim : str
             Dimension to concatenate along
         chunks : dict, optional
@@ -241,20 +127,20 @@ class ClimateDataLoader:
         xr.Dataset
             Combined dataset
         """
-        if not filepaths:
-            raise ValueError("No files to load")
+        if not store_paths:
+            raise ValueError("No Zarr stores to load")
 
-        logger.info(f"Loading {len(filepaths)} files")
+        logger.info(f"Loading {len(store_paths)} Zarr stores")
 
-        # Load files sequentially
+        # Load stores sequentially
         datasets = []
-        for filepath in tqdm(filepaths, desc="Loading files"):
+        for store_path in tqdm(store_paths, desc="Loading Zarr stores"):
             try:
-                ds = self.load_file(filepath, chunks)
+                ds = self.load_zarr(store_path, chunks)
                 if ds is not None:
                     datasets.append(ds)
             except Exception as e:
-                logger.warning(f"Failed to load {filepath}: {e}")
+                logger.warning(f"Failed to load {store_path}: {e}")
                 continue
 
         # Concatenate datasets
@@ -278,7 +164,7 @@ class ClimateDataLoader:
     def load_variable_data(self, variable: str,
                           time_range: Optional[tuple] = None) -> xr.Dataset:
         """
-        Load all data for a specific climate variable.
+        Load all data for a specific climate variable from Zarr stores.
 
         Parameters:
         -----------
@@ -292,28 +178,23 @@ class ClimateDataLoader:
         xr.Dataset
             Dataset containing the variable data
         """
-        # Get file patterns for this variable
-        patterns = self.config.get(f'data.file_patterns.{variable}', [])
+        # Get Zarr store patterns for this variable
+        patterns = self.config.get(f'data.zarr_stores.{variable}', [])
         if not patterns:
-            logger.warning(f"No file patterns defined for variable {variable}")
-            return None
+            # Fall back to general patterns if no specific ones defined
+            patterns = ['*.zarr']
+            logger.info(f"Using default pattern for variable {variable}")
 
-        # Scan for files
+        # Scan for Zarr stores
         input_path = self.config.input_path
-        files = []
-        for pattern in patterns:
-            files.extend(self.scan_directory(input_path, [pattern]))
+        stores = self.scan_directory(input_path, patterns)
 
-        # Deduplicate files (same file might match multiple patterns)
-        files = list(set(files))
-        files.sort()  # Sort for consistent ordering
-
-        if not files:
-            logger.warning(f"No files found for variable {variable}")
+        if not stores:
+            logger.warning(f"No Zarr stores found for variable {variable}")
             return None
 
-        # Load files
-        ds = self.load_multiple_files(files)
+        # Load stores
+        ds = self.load_multiple_stores(stores)
 
         # Apply time range if specified
         if time_range and 'time' in ds.dims:
@@ -370,46 +251,6 @@ class ClimateDataLoader:
 
         return ds
 
-    def _infer_crs(self, ds: xr.Dataset) -> Optional[str]:
-        """
-        Infer CRS from dataset attributes.
-
-        Parameters:
-        -----------
-        ds : xr.Dataset
-            Dataset to check
-
-        Returns:
-        --------
-        str or None
-            CRS string if found
-        """
-        # Check common attribute names
-        crs_attrs = ['crs', 'spatial_ref', 'grid_mapping', 'projection']
-
-        for attr in crs_attrs:
-            if attr in ds.attrs:
-                crs_value = ds.attrs[attr]
-                if isinstance(crs_value, str) and 'EPSG' in crs_value:
-                    return crs_value
-
-        # Check variable attributes
-        for var in ds.data_vars:
-            if 'grid_mapping' in ds[var].attrs:
-                grid_mapping = ds[var].attrs['grid_mapping']
-                if grid_mapping in ds.data_vars:
-                    if 'spatial_ref' in ds[grid_mapping].attrs:
-                        return ds[grid_mapping].attrs['spatial_ref']
-
-        # Default to WGS84 if we have lat/lon
-        if 'lat' in ds.dims and 'lon' in ds.dims:
-            lat_range = float(ds.lat.max() - ds.lat.min())
-            lon_range = float(ds.lon.max() - ds.lon.min())
-            if lat_range <= 180 and lon_range <= 360:
-                return 'EPSG:4326'
-
-        return None
-
     def get_info(self) -> Dict:
         """
         Get information about loaded datasets.
@@ -422,16 +263,55 @@ class ClimateDataLoader:
         info = {}
         for name, ds in self.datasets.items():
             info[name] = {
-                'dimensions': dict(ds.dims),
+                'dimensions': dict(ds.sizes),
                 'variables': list(ds.data_vars),
-                'shape': {dim: size for dim, size in ds.dims.items()},
+                'shape': dict(ds.sizes),
                 'chunks': ds.chunks if ds.chunks else None,
-                'crs': ds.rio.crs if hasattr(ds, 'rio') and ds.rio.crs else None,
                 'memory_size': ds.nbytes / 1e9,  # GB
                 'time_range': [str(ds.time.min().values), str(ds.time.max().values)]
                               if 'time' in ds.dims else None
             }
         return info
+
+    def optimize_zarr_store(self, store_path: Union[str, Path],
+                           target_chunks: Optional[Dict] = None) -> None:
+        """
+        Optimize a Zarr store by rechunking and consolidating metadata.
+
+        Parameters:
+        -----------
+        store_path : str or Path
+            Path to Zarr store to optimize
+        target_chunks : dict, optional
+            Target chunk sizes for optimization
+        """
+        store_path = Path(store_path)
+        logger.info(f"Optimizing Zarr store: {store_path}")
+
+        try:
+            # Open the store
+            ds = xr.open_zarr(store_path)
+
+            # Define optimal chunks if not provided
+            if target_chunks is None:
+                target_chunks = {
+                    'time': min(365, ds.sizes.get('time', 1)),
+                    'lat': min(100, ds.sizes.get('lat', 1)),
+                    'lon': min(100, ds.sizes.get('lon', 1))
+                }
+
+            # Rechunk the dataset
+            ds_rechunked = ds.chunk(target_chunks)
+
+            # Save with optimization
+            output_path = store_path.parent / f"{store_path.stem}_optimized.zarr"
+            ds_rechunked.to_zarr(output_path, mode='w', consolidated=True)
+
+            logger.info(f"Optimized store saved to: {output_path}")
+
+        except Exception as e:
+            logger.error(f"Error optimizing Zarr store: {e}")
+            raise
 
 
 # Example usage
@@ -447,13 +327,13 @@ if __name__ == "__main__":
     # Initialize loader
     loader = ClimateDataLoader(config)
 
-    # Example: Load temperature data
-    print("Scanning for climate data files...")
-    files = loader.scan_directory(config.input_path)
-    print(f"Found {len(files)} files")
+    # Example: Load temperature data from Zarr stores
+    print("Scanning for Zarr stores...")
+    stores = loader.scan_directory(config.input_path)
+    print(f"Found {len(stores)} Zarr stores")
 
-    if files:
-        # Load first file as example
-        ds = loader.load_file(files[0])
+    if stores:
+        # Load first store as example
+        ds = loader.load_zarr(stores[0])
         print(f"Loaded dataset with dimensions: {dict(ds.dims)}")
         print(f"Variables: {list(ds.data_vars)}")

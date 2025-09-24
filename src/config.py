@@ -31,18 +31,16 @@ class Config:
         return {
             # Data paths
             'data': {
-                'input_path': '/media/external_drive',  # Path to external drive
+                'input_path': '/media/external_drive',  # Path to external drive with Zarr stores
                 'output_path': './outputs',
                 'log_path': './logs',
-                'file_patterns': {
-                    'temperature': ['*tas*.tif', '*tas*.nc', '*temp*.tif', '*temp*.nc',
-                                   '*tasmax*.tif', '*tasmax*.nc', '*tasmin*.tif', '*tasmin*.nc',
-                                   '*tmax*.tif', '*tmax*.nc', '*tmin*.tif', '*tmin*.nc'],
-                    'precipitation': ['*pr*.tif', '*pr*.nc', '*precip*.tif', '*precip*.nc'],
-                    'humidity': ['*hurs*.tif', '*hurs*.nc', '*humid*.tif', '*humid*.nc',
-                                '*hus*.tif', '*hus*.nc', '*huss*.tif', '*huss*.nc',
-                                '*specific_humidity*.tif', '*specific_humidity*.nc'],
-                    'wind': ['*sfcWind*.tif', '*sfcWind*.nc', '*wind*.tif', '*wind*.nc']
+                'zarr_stores': {
+                    'temperature': ['*tas*.zarr', '*temp*.zarr', '*tasmax*.zarr',
+                                   '*tasmin*.zarr', '*tmax*.zarr', '*tmin*.zarr'],
+                    'precipitation': ['*pr*.zarr', '*precip*.zarr'],
+                    'humidity': ['*hurs*.zarr', '*humid*.zarr', '*hus*.zarr',
+                                '*huss*.zarr', '*specific_humidity*.zarr'],
+                    'wind': ['*sfcWind*.zarr', '*wind*.zarr']
                 }
             },
 
