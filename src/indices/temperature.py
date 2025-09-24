@@ -115,5 +115,6 @@ class TemperatureIndicesCalculator:
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error calculating {func.__name__}: {e}")
+            func_name = getattr(func, '__name__', str(func))
+            logger.error(f"Error calculating {func_name}: {e}")
             return None

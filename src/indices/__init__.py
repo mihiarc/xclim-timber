@@ -164,7 +164,7 @@ class ClimateIndicesCalculator:
         elif variable == 'pr':
             indices.update(self.precipitation.calculate_all(ds, freq))
             indices.update(
-                self.precipitation.calculate_percentile_based(ds, baseline_percentiles, freq)
+                self.precipitation.calculate_percentile_based(ds, baseline_percentiles, freq))
 
         elif variable in ['hus', 'hurs']:
             indices.update(self.specialized.calculate_humidity(ds, freq))
