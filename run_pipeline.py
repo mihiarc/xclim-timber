@@ -68,10 +68,27 @@ def process_climate_data(
     # Initialize streaming pipeline
     logger.info("Initializing streaming pipeline...")
 
-    # Create config path string if needed
-    config_path_str = str(config_path) if config_path else None
+    # Create temporary config if none provided
+    if not config_path:
+        # Create a minimal config for the streaming pipeline
+        config_path = Path.home() / '.xclim-timber' / 'temp_config.yaml'
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write minimal config
+        with open(config_path, 'w') as f:
+            f.write(f"""
+data:
+  output_path: {output_path}
+
+processing:
+  dask:
+    n_workers: 4
+    memory_limit: '4GB'
+    dashboard: false
+""")
+
     pipeline = StreamingClimatePipeline(
-        config_path=config_path_str,
+        config_path=str(config_path),
         chunk_years=1,  # Process 1 year at a time for memory efficiency
         enable_dashboard=False  # Disable for cleaner output
     )
@@ -83,22 +100,33 @@ def process_climate_data(
         if not end_year:
             end_year = 2024  # Current PRISM end
 
+        # Determine which variables to process
+        pipeline_variables = variables or ['temperature', 'precipitation']
+
         logger.info(f"Processing years {start_year} to {end_year}")
+        logger.info(f"Variables: {pipeline_variables}")
 
         # Process using the streaming pipeline
-        results = pipeline.process_time_range(
+        results = pipeline.run_streaming(
+            variables=pipeline_variables,
             start_year=start_year,
-            end_year=end_year,
-            output_dir=output_path if output_dir else None
+            end_year=end_year
         )
 
-        logger.info(f"✓ Successfully processed {len(results)} time chunks")
+        logger.info(f"✓ Processing complete!")
+        logger.info(f"  Status: {results.get('status', 'unknown')}")
+        logger.info(f"  Chunks processed: {results.get('chunks_processed', 0)}")
+        if 'output_path' in results:
+            logger.info(f"  Output: {results['output_path']}")
 
     except Exception as e:
         logger.error(f"Error in processing: {str(e)}")
         if verbose:
             logger.exception("Full traceback:")
         raise
+    finally:
+        # Clean up pipeline resources
+        pipeline.close()
 
     logger.info("\n✓ Pipeline complete!")
 
