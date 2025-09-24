@@ -104,7 +104,7 @@ processing:
 
     pipeline = StreamingClimatePipeline(
         config_path=str(config_path),
-        chunk_years=1,  # Process 1 year at a time for memory efficiency
+        chunk_years=10,  # Process 10 years at a time for better efficiency
         enable_dashboard=False  # Disable for cleaner output
     )
 

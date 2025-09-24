@@ -243,8 +243,13 @@ class StreamingClimatePipeline:
             logger.debug(f"Loaded {var} chunk: {ds.dims}")
 
         # Calculate indices - computation happens here
-        calculator = ClimateIndicesCalculator(self.config)
-        indices = calculator.calculate_all_indices(datasets)
+        calculator = ClimateIndicesCalculator()
+
+        # Combine all datasets into one for the calculator
+        combined_ds = xr.merge(list(datasets.values()))
+
+        # Calculate indices with empty baseline (will be calculated if needed)
+        indices = calculator.calculate_all(combined_ds, baseline_percentiles={})
 
         # Combine indices into single dataset
         result_ds = xr.Dataset(indices)

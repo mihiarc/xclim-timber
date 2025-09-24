@@ -29,11 +29,17 @@ class Config:
         if config_file and Path(config_file).exists():
             with open(config_file) as f:
                 user_config = yaml.safe_load(f)
-                # Only update the base path if specified
-                if 'base_path' in user_config:
-                    self.config['data']['base_path'] = user_config['base_path']
-                if 'output_path' in user_config:
-                    self.config['data']['output_path'] = user_config['output_path']
+                # Simply merge the loaded config
+                if user_config:
+                    self._merge_config(self.config, user_config)
+
+    def _merge_config(self, base: dict, update: dict) -> None:
+        """Simple recursive merge of config dictionaries."""
+        for key, value in update.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                self._merge_config(base[key], value)
+            else:
+                base[key] = value
 
     def _get_indices_config(self) -> Dict:
         """Return all 84 climate indices organized by category."""
@@ -88,6 +94,32 @@ class Config:
         }
 
         return base / store_map.get(variable_type, variable_type)
+
+    def get(self, key: str, default=None):
+        """
+        Get configuration value using dot notation.
+
+        Parameters:
+        -----------
+        key : str
+            Configuration key (e.g., 'data.output_path' or 'processing.dask.n_workers')
+        default : any
+            Default value if key not found
+
+        Returns:
+        --------
+        Configuration value or default
+        """
+        keys = key.split('.')
+        value = self.config
+
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return default
+
+        return value
 
     @property
     def output_path(self) -> Path:
