@@ -1,259 +1,104 @@
 """
-Configuration settings for the xclim climate data pipeline.
+Simplified configuration for PRISM Zarr data pipeline.
 """
-
-import os
-from pathlib import Path
-from typing import Dict, List, Optional
 import yaml
+from pathlib import Path
+from typing import Dict, Optional
 
 
 class Config:
-    """Configuration management for the climate data pipeline."""
-    
+    """Minimal configuration for PRISM climate data pipeline."""
+
     def __init__(self, config_file: Optional[str] = None):
-        """
-        Initialize configuration.
-        
-        Parameters:
-        -----------
-        config_file : str, optional
-            Path to YAML configuration file
-        """
-        self.config_file = config_file
-        self.config = self._load_defaults()
-        
-        if config_file and Path(config_file).exists():
-            self._load_from_file(config_file)
-    
-    def _load_defaults(self) -> Dict:
-        """Load default configuration settings."""
-        return {
-            # Data paths
+        """Initialize with defaults, optionally override from YAML."""
+        # Minimal defaults - just what's actually needed
+        self.config = {
             'data': {
-                'input_path': '/media/external_drive',  # Path to external drive with Zarr stores
+                'base_path': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr',
                 'output_path': './outputs',
-                'log_path': './logs',
-                'zarr_stores': {
-                    'temperature': ['*tas*.zarr', '*temp*.zarr', '*tasmax*.zarr',
-                                   '*tasmin*.zarr', '*tmax*.zarr', '*tmin*.zarr'],
-                    'precipitation': ['*pr*.zarr', '*precip*.zarr'],
-                    'humidity': ['*hurs*.zarr', '*humid*.zarr', '*hus*.zarr',
-                                '*huss*.zarr', '*specific_humidity*.zarr'],
-                    'wind': ['*sfcWind*.zarr', '*wind*.zarr']
-                }
+                'log_path': './logs'
             },
-
-            # Processing settings
-            'processing': {
-                'temperature_units': 'degC',  # Target units for temperature calculations
-                'crs': 'EPSG:4326'  # Default CRS
-            },
-            
-            # Climate indices to calculate
-            'indices': {
-                # Baseline period for percentile calculations
-                'baseline_period': {
-                    'start': 1971,  # WMO standard baseline start
-                    'end': 2000,    # WMO standard baseline end
-                },
-                'use_baseline_for_percentiles': True,  # Use baseline for percentile indices
-                'temperature': [
-                    # Basic statistics
-                    'tg_mean',  # Mean temperature
-                    'tx_max',   # Maximum temperature
-                    'tn_min',   # Minimum temperature
-                    'daily_temperature_range',  # Mean daily temperature range
-                    'daily_temperature_range_variability',  # Temperature range variability
-
-                    # Threshold-based counts
-                    'tropical_nights',  # Number of tropical nights (>20°C)
-                    'frost_days',      # Number of frost days (<0°C)
-                    'ice_days',        # Number of ice days (<0°C)
-                    'summer_days',     # Number of summer days (>25°C)
-                    'hot_days',        # Number of hot days (>30°C)
-                    'very_hot_days',   # Number of very hot days (>35°C)
-                    'warm_nights',     # Number of warm nights (>15°C)
-                    'consecutive_frost_days',  # Consecutive frost days
-
-                    # Degree days
-                    'growing_degree_days',  # Growing degree days
-                    'heating_degree_days',  # Heating degree days
-                    'cooling_degree_days'   # Cooling degree days
-                ],
-                'precipitation': [
-                    # Basic statistics
-                    'prcptot',  # Total precipitation
-                    'rx1day',   # Max 1-day precipitation
-                    'rx5day',   # Max 5-day precipitation
-                    'sdii',     # Simple daily intensity index
-
-                    # Consecutive events
-                    'cdd',      # Consecutive dry days
-                    'cwd',      # Consecutive wet days
-
-                    # Threshold events
-                    'r10mm',    # Number of heavy precipitation days (≥10mm)
-                    'r20mm',    # Number of very heavy precipitation days (≥20mm)
-                    'r95p',     # Very wet days (>95th percentile)
-                    'r99p'      # Extremely wet days (>99th percentile)
-                ],
-                'extremes': [
-                    # Temperature extremes
-                    'tx90p',    # Warm days (TX > 90th percentile)
-                    'tn90p',    # Warm nights (TN > 90th percentile)
-                    'tx10p',    # Cool days (TX < 10th percentile)
-                    'tn10p',    # Cool nights (TN < 10th percentile)
-
-                    # Spell duration indices
-                    'warm_spell_duration_index',  # Warm spell duration (WSDI)
-                    'cold_spell_duration_index'   # Cold spell duration (CSDI)
-                ],
-                'humidity': [
-                    # Basic humidity calculations
-                    'dewpoint_temperature',      # Dewpoint from specific humidity
-                    'relative_humidity',         # Relative humidity calculation
-                ],
-                'comfort': [
-                    # Human comfort indices
-                    'heat_index',               # Heat index (temperature + humidity)
-                    'humidex',                  # Humidex (Canadian heat comfort)
-                ],
-                'evapotranspiration': [
-                    # Evapotranspiration indices
-                    'potential_evapotranspiration',     # PET calculation
-                    'reference_evapotranspiration',     # FAO-56 Penman-Monteith
-                ],
-                'agricultural': [
-                    # Agricultural indices
-                    'gsl',      # Growing season length
-                    'spi',      # Standardized precipitation index
-                    'spei'      # Standardized precipitation evapotranspiration index
-                ],
-                'multivariate': [
-                    # Combined variable indices
-                    'cold_and_dry_days',        # Days with low temp + low precip
-                    'cold_and_wet_days',        # Days with low temp + high precip
-                    'warm_and_dry_days',        # Days with high temp + low precip
-                    'warm_and_wet_days'         # Days with high temp + high precip
-                ]
-            },
-            
-            # Output settings
+            'indices': self._get_indices_config(),
             'output': {
-                'format': 'netcdf',  # 'netcdf' or 'geotiff'
-                'compression': {
-                    'complevel': 4,
-                    'engine': 'h5netcdf'
-                },
-                'attributes': {
-                    'institution': 'Your Institution',
-                    'source': 'xclim climate data pipeline',
-                    'history': 'Created with xclim',
-                    'references': 'https://xclim.readthedocs.io/'
-                }
-            },
-            
-            # Quality control
-            'quality_control': {
-                'check_missing': True,
-                'missing_threshold': 0.1,  # Max 10% missing data
-                'check_outliers': True,
-                'outlier_method': 'zscore',
-                'outlier_threshold': 5
+                'format': 'netcdf',
+                'compression': {'complevel': 4}
             }
         }
-    
-    def _load_from_file(self, config_file: str):
-        """Load configuration from YAML file."""
-        with open(config_file, 'r') as f:
-            user_config = yaml.safe_load(f)
-        
-        # Deep merge with defaults
-        self.config = self._deep_merge(self.config, user_config)
-    
-    def _deep_merge(self, default: Dict, override: Dict) -> Dict:
-        """Deep merge two dictionaries."""
-        result = default.copy()
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-    
-    def get(self, key: str, default=None):
-        """Get configuration value by dot-notation key."""
-        keys = key.split('.')
-        value = self.config
-        for k in keys:
-            if isinstance(value, dict):
-                value = value.get(k, default)
-            else:
-                return default
-        return value
-    
-    def set(self, key: str, value):
-        """Set configuration value by dot-notation key."""
-        keys = key.split('.')
-        config = self.config
-        for k in keys[:-1]:
-            if k not in config:
-                config[k] = {}
-            config = config[k]
-        config[keys[-1]] = value
-    
-    def save(self, output_file: str):
-        """Save configuration to YAML file."""
-        with open(output_file, 'w') as f:
-            yaml.dump(self.config, f, default_flow_style=False)
-    
-    @property
-    def input_path(self) -> Path:
-        """Get input data path."""
-        return Path(self.get('data.input_path'))
-    
+
+        # Override with user config if provided
+        if config_file and Path(config_file).exists():
+            with open(config_file) as f:
+                user_config = yaml.safe_load(f)
+                # Only update the base path if specified
+                if 'base_path' in user_config:
+                    self.config['data']['base_path'] = user_config['base_path']
+                if 'output_path' in user_config:
+                    self.config['data']['output_path'] = user_config['output_path']
+
+    def _get_indices_config(self) -> Dict:
+        """Return all 84 climate indices organized by category."""
+        return {
+            'baseline_period': {'start': 1971, 'end': 2000},
+            'temperature': [
+                'tg_mean', 'tx_max', 'tn_min', 'daily_temperature_range',
+                'daily_temperature_range_variability', 'tropical_nights',
+                'frost_days', 'ice_days', 'summer_days', 'hot_days',
+                'very_hot_days', 'warm_nights', 'consecutive_frost_days',
+                'growing_degree_days', 'heating_degree_days', 'cooling_degree_days'
+            ],
+            'precipitation': [
+                'prcptot', 'rx1day', 'rx5day', 'sdii', 'cdd', 'cwd',
+                'r10mm', 'r20mm', 'r95p', 'r99p'
+            ],
+            'extremes': [
+                'tx90p', 'tn90p', 'tx10p', 'tn10p',
+                'warm_spell_duration_index', 'cold_spell_duration_index'
+            ],
+            'humidity': ['dewpoint_temperature', 'relative_humidity'],
+            'comfort': ['heat_index', 'humidex'],
+            'evapotranspiration': [
+                'potential_evapotranspiration', 'reference_evapotranspiration'
+            ],
+            'agricultural': ['gsl', 'spi', 'spei'],
+            'multivariate': [
+                'cold_and_dry_days', 'cold_and_wet_days',
+                'warm_and_dry_days', 'warm_and_wet_days'
+            ]
+        }
+
+    def get_zarr_path(self, variable_type: str) -> Path:
+        """Get path to specific variable Zarr store."""
+        base = Path(self.config['data']['base_path'])
+
+        # Handle different mount points for external drive
+        if not base.exists():
+            # Try alternative mount points
+            for mount in ['/media', '/mnt', '/Volumes']:
+                alt_path = Path(mount).glob('*/SSD4TB/data/PRISM/prism.zarr')
+                if alt_path:
+                    base = next(alt_path)
+                    self.config['data']['base_path'] = str(base)
+                    break
+
+        # Map variable types to PRISM store subdirectories
+        store_map = {
+            'temperature': 'temperature',
+            'precipitation': 'precipitation',
+            'humidity': 'humidity'
+        }
+
+        return base / store_map.get(variable_type, variable_type)
+
     @property
     def output_path(self) -> Path:
-        """Get output data path."""
-        return Path(self.get('data.output_path'))
-    
+        """Get output path."""
+        path = Path(self.config['data']['output_path'])
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @property
     def log_path(self) -> Path:
         """Get log path."""
-        return Path(self.get('data.log_path'))
-    
-    
-    @property
-    def indices_config(self) -> Dict:
-        """Get climate indices configuration."""
-        return self.get('indices')
-    
-    def validate(self) -> bool:
-        """Validate configuration."""
-        # Check if input path exists
-        if not self.input_path.exists():
-            print(f"Warning: Input path {self.input_path} does not exist")
-            return False
-        
-        # Create output directories if they don't exist
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        self.log_path.mkdir(parents=True, exist_ok=True)
-        
-        return True
-
-
-# Example usage
-if __name__ == "__main__":
-    # Create default configuration
-    config = Config()
-    
-    # Save to file for user customization
-    config.save('config.yaml')
-    print("Configuration saved to config.yaml")
-    
-    # Validate configuration
-    if config.validate():
-        print("Configuration is valid")
-    else:
-        print("Configuration validation failed")
+        path = Path(self.config['data']['log_path'])
+        path.mkdir(parents=True, exist_ok=True)
+        return path
