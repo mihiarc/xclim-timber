@@ -15,7 +15,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from config import Config
-from pipeline_parallel import ParallelPrismPipeline
+from pipeline_streaming import StreamingClimatePipeline
 import xarray as xr
 
 
@@ -65,9 +65,16 @@ def process_climate_data(
     else:
         output_path = config.output_path
 
-    # Initialize pipeline
-    logger.info("Initializing parallel pipeline...")
-    pipeline = ParallelPrismPipeline(config, output_path=output_path if output_dir else None)
+    # Initialize streaming pipeline
+    logger.info("Initializing streaming pipeline...")
+
+    # Create config path string if needed
+    config_path_str = str(config_path) if config_path else None
+    pipeline = StreamingClimatePipeline(
+        config_path=config_path_str,
+        chunk_years=1,  # Process 1 year at a time for memory efficiency
+        enable_dashboard=False  # Disable for cleaner output
+    )
 
     try:
         # Use year chunking for memory efficiency
@@ -78,15 +85,14 @@ def process_climate_data(
 
         logger.info(f"Processing years {start_year} to {end_year}")
 
-        # Process the year chunk
-        output_file = pipeline.process_year_chunk(
+        # Process using the streaming pipeline
+        results = pipeline.process_time_range(
             start_year=start_year,
             end_year=end_year,
-            variables=variables,
-            indices_categories=None  # Use all categories
+            output_dir=output_path if output_dir else None
         )
 
-        logger.info(f"✓ Successfully saved results to {output_file}")
+        logger.info(f"✓ Successfully processed {len(results)} time chunks")
 
     except Exception as e:
         logger.error(f"Error in processing: {str(e)}")
