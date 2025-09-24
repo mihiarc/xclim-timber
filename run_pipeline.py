@@ -68,17 +68,32 @@ def process_climate_data(
     # Initialize streaming pipeline
     logger.info("Initializing streaming pipeline...")
 
-    # Create temporary config if none provided
+    # Use comprehensive config as default if none provided
     if not config_path:
-        # Create a minimal config for the streaming pipeline
-        config_path = Path.home() / '.xclim-timber' / 'temp_config.yaml'
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Check if comprehensive config exists
+        default_config = Path(__file__).parent / 'configs' / 'config_comprehensive_2001_2024.yaml'
+        if default_config.exists():
+            config_path = default_config
+            logger.info(f"Using default config: {config_path}")
+        else:
+            # Create a minimal config as fallback
+            config_path = Path.home() / '.xclim-timber' / 'temp_config.yaml'
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write minimal config
-        with open(config_path, 'w') as f:
-            f.write(f"""
+            # Write minimal config
+            with open(config_path, 'w') as f:
+                f.write(f"""
 data:
   output_path: {output_path}
+  input_path: /media/mihiarc/SSD4TB/data/PRISM
+
+  zarr_stores:
+    temperature:
+      - 'prism.zarr/temperature'
+    precipitation:
+      - 'prism.zarr/precipitation'
+    humidity:
+      - 'prism.zarr/humidity'
 
 processing:
   dask:
@@ -158,7 +173,7 @@ Examples:
     parser.add_argument(
         '--config',
         type=str,
-        help='Path to configuration file (optional)'
+        help='Path to configuration file (defaults to configs/config_comprehensive_2001_2024.yaml)'
     )
 
     parser.add_argument(
