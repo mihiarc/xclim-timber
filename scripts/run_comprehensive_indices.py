@@ -10,6 +10,17 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import argparse
+import warnings
+
+# Suppress common warnings for climate data processing
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
+
+# Configure logging to reduce verbosity from xclim
+logging.getLogger('xclim').setLevel(logging.WARNING)
+logging.getLogger('xclim.core.cfchecks').setLevel(logging.ERROR)
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -115,7 +126,7 @@ def estimate_processing_requirements(chunk_years=1):
     print(f"  Output: {n_chunks} chunk files + 1 combined file (~10-20 GB total)")
 
 
-def run_comprehensive_processing(chunk_years=1):
+def run_comprehensive_processing(chunk_years=1, enable_dashboard=True):
     """
     Execute the comprehensive climate indices calculation using streaming approach.
 
@@ -123,6 +134,8 @@ def run_comprehensive_processing(chunk_years=1):
     -----------
     chunk_years : int
         Number of years to process per chunk (default: 1)
+    enable_dashboard : bool
+        Whether to enable Dask dashboard (default: False)
     """
 
     print("\n" + "=" * 80)
@@ -140,21 +153,31 @@ def run_comprehensive_processing(chunk_years=1):
     print("Baseline period: 1981-2000")
     print("Indices: 42+ across 8 categories")
     print(f"⚡ Streaming mode: {chunk_years}-year chunks")
+    if enable_dashboard:
+        print("📊 Dashboard: http://localhost:8787 (may have visualization issues)")
 
     # Initialize streaming pipeline
     print("\n" + "-" * 40)
     print("Initializing streaming pipeline...")
 
     try:
-        # Use the new streaming pipeline
-        pipeline = StreamingClimatePipeline(str(config_path), chunk_years=chunk_years)
+        # Use the new streaming pipeline with dashboard preference
+        pipeline = StreamingClimatePipeline(
+            str(config_path),
+            chunk_years=chunk_years,
+            enable_dashboard=enable_dashboard
+        )
 
         # Run streaming processing
         print("\n" + "-" * 40)
         print("Starting streaming calculation...")
-        print("Monitor progress at: http://localhost:8787")
         print(f"\nProcessing {24 // chunk_years} chunks sequentially...")
-        print("Each chunk will be saved immediately to conserve memory.\n")
+        print("Each chunk will be saved immediately to conserve memory.")
+        if enable_dashboard:
+            print("📊 Monitor progress at: http://localhost:8787")
+            print("Note: Dashboard may show errors for complex task graphs\n")
+        else:
+            print("Dashboard disabled for cleaner processing\n")
 
         start_time = datetime.now()
 
@@ -235,8 +258,21 @@ def main():
         '--yes', '-y', action='store_true',
         help='Skip confirmation prompt'
     )
+    parser.add_argument(
+        '--show-warnings', action='store_true',
+        help='Show all warnings (useful for debugging)'
+    )
+    parser.add_argument(
+        '--no-dashboard', action='store_true',
+        help='Disable Dask dashboard to avoid visualization errors'
+    )
 
     args = parser.parse_args()
+
+    # Reset warning filters if requested
+    if args.show_warnings:
+        warnings.resetwarnings()
+        print("⚠ Warning suppression disabled - all warnings will be shown")
 
     print("\n" + "=" * 80)
     print("COMPREHENSIVE CLIMATE INDICES PROCESSOR")
@@ -276,7 +312,10 @@ def main():
             return 0
 
     # Step 4: Run streaming processing
-    success = run_comprehensive_processing(chunk_years=args.chunk_years)
+    success = run_comprehensive_processing(
+        chunk_years=args.chunk_years,
+        enable_dashboard=not args.no_dashboard
+    )
 
     if success:
         print("\n✓ All streaming processing completed successfully!")

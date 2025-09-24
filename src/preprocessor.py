@@ -147,11 +147,21 @@ class ClimateDataPreprocessor:
             total_size = data.size
             missing_count = data.isnull().sum().values
             missing_pct = missing_count / total_size
-            
-            logger.info(f"Variable {var}: {missing_pct:.2%} missing values")
-            
-            if missing_pct > missing_threshold:
-                logger.warning(f"Variable {var} exceeds missing data threshold ({missing_pct:.2%} > {missing_threshold:.2%})")
+
+            # For PRISM/gridded data, ~40-50% missing is normal (ocean/water mask)
+            # Only log details if it's outside the expected range
+            if 0.40 <= missing_pct <= 0.50:
+                # This is expected ocean masking - use debug level
+                logger.debug(f"Variable {var}: {missing_pct:.2%} missing values (expected ocean mask)")
+            elif missing_pct > 0.50:
+                # This is higher than expected even with ocean mask
+                logger.warning(f"Variable {var}: {missing_pct:.2%} missing values (higher than expected)")
+            elif missing_pct > missing_threshold:
+                # Between threshold and ocean mask range
+                logger.info(f"Variable {var}: {missing_pct:.2%} missing values")
+            else:
+                # Low missing values - just debug
+                logger.debug(f"Variable {var}: {missing_pct:.2%} missing values")
             
             # Apply interpolation for small gaps
             if missing_pct > 0 and missing_pct < missing_threshold:

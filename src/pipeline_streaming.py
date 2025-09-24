@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Union, Tuple
 import xarray as xr
 import numpy as np
 from datetime import datetime
+import warnings
 import dask
 import dask.array as da
 from dask.distributed import Client, as_completed
@@ -18,6 +19,12 @@ from tqdm import tqdm
 
 from config import Config
 from indices_calculator import ClimateIndicesCalculator
+
+# Suppress common warnings for climate data processing
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +40,7 @@ class StreamingClimatePipeline:
     - Parallel processing of independent time chunks
     """
 
-    def __init__(self, config_path: str, chunk_years: int = 1):
+    def __init__(self, config_path: str, chunk_years: int = 1, enable_dashboard: bool = True):
         """
         Initialize streaming pipeline.
 
@@ -43,9 +50,12 @@ class StreamingClimatePipeline:
             Path to configuration file
         chunk_years : int
             Number of years to process at once (default: 1)
+        enable_dashboard : bool
+            Whether to enable Dask dashboard (default: True)
         """
         self.config = Config(config_path)
         self.chunk_years = chunk_years
+        self.enable_dashboard = enable_dashboard
         self.client = None
 
         # Setup logging
@@ -64,14 +74,41 @@ class StreamingClimatePipeline:
         if self.client is None:
             n_workers = self.config.get('processing.dask.n_workers', 4)
             memory_limit = self.config.get('processing.dask.memory_limit', '4GB')
+            # Use instance variable, fallback to config, then default to True
+            enable_dashboard = self.enable_dashboard if hasattr(self, 'enable_dashboard') else self.config.get('processing.dask.dashboard', True)
 
-            self.client = Client(
-                n_workers=n_workers,
-                threads_per_worker=1,
-                memory_limit=memory_limit,
-                dashboard_address=':8787'
-            )
-            logger.info(f"Dask dashboard: http://localhost:8787")
+            try:
+                if enable_dashboard:
+                    # Dashboard enabled - may have visualization issues with complex graphs
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=':8787',
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask dashboard: http://localhost:8787")
+                else:
+                    # Dashboard disabled for cleaner processing
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=None,
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask client initialized (dashboard disabled)")
+            except Exception as e:
+                # Fallback to simple client without dashboard
+                logger.warning(f"Could not initialize Dask client with dashboard: {e}")
+                self.client = Client(
+                    n_workers=n_workers,
+                    threads_per_worker=1,
+                    memory_limit=memory_limit,
+                    dashboard_address=None,
+                    silence_logs=logging.ERROR
+                )
+                logger.info(f"Dask client initialized (dashboard disabled due to error)")
 
     def _get_zarr_stores(self) -> Dict[str, str]:
         """

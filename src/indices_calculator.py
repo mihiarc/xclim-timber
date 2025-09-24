@@ -10,12 +10,27 @@ import warnings
 import numpy as np
 import xarray as xr
 import xclim
-from xclim import atmos, land, generic
+from xclim.indicators import atmos, land, generic
 from xclim.core.units import convert_units_to
+from xclim.core.calendar import percentile_doy
 import pandas as pd
 
 
 logger = logging.getLogger(__name__)
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_climate_warnings():
+    """Context manager to suppress common warnings in climate data processing."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+        warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+        warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
+        yield
 
 
 class ClimateIndicesCalculator:
@@ -36,6 +51,10 @@ class ClimateIndicesCalculator:
         # Add caching for performance optimization
         self._percentile_cache = {}
         self._pressure_array = None
+        # Cache for pre-calculated baseline percentiles (for chunked processing)
+        self._baseline_percentiles = {}
+        # Track if we've loaded baseline percentiles
+        self._baseline_loaded = False
 
         # Baseline period configuration
         baseline_config = self.indices_config.get('baseline_period', {})
@@ -43,12 +62,80 @@ class ClimateIndicesCalculator:
         self.baseline_end = baseline_config.get('end', 2000)
         self.use_baseline = self.indices_config.get('use_baseline_for_percentiles', True)
 
+        # Try to load pre-calculated baseline percentiles if they exist
+        self._load_baseline_percentiles_if_available()
+
         # Validate baseline configuration
         if self.baseline_start >= self.baseline_end:
             raise ValueError(f"Invalid baseline period: start year ({self.baseline_start}) must be before end year ({self.baseline_end})")
         if self.baseline_end - self.baseline_start < 10:
             logger.warning(f"Short baseline period ({self.baseline_end - self.baseline_start} years). WMO recommends at least 30 years.")
-        
+
+    def _load_baseline_percentiles_if_available(self):
+        """
+        Load pre-calculated baseline percentiles from data folder.
+        Fails if percentile indices are configured but baseline data is missing.
+        """
+        from pathlib import Path
+
+        # Check if any percentile indices are configured
+        temp_indices = self.indices_config.get('temperature', [])
+        extreme_indices = self.indices_config.get('extremes', [])
+
+        percentile_indices = ['tx90p', 'tn90p', 'tx10p', 'tn10p',
+                              'warm_spell_duration_index', 'cold_spell_duration_index',
+                              'wsdi', 'csdi']
+
+        needs_percentiles = any(idx in temp_indices + extreme_indices for idx in percentile_indices)
+
+        # Check data folder for baseline percentiles
+        baseline_path = Path(f'data/baselines/baseline_percentiles_{self.baseline_start}_{self.baseline_end}.nc')
+
+        if needs_percentiles:
+            if not baseline_path.exists():
+                raise FileNotFoundError(
+                    f"Percentile indices are configured but baseline data not found at {baseline_path}.\n"
+                    f"Run 'python src/calculate_baseline_percentiles.py' to generate baseline data first.\n"
+                    f"The baseline file should be placed in: data/baselines/"
+                )
+
+            try:
+                import xarray as xr
+                logger.info(f"Loading required baseline percentiles from {baseline_path}")
+                ds = xr.open_dataset(baseline_path)
+
+                # Map the thresholds to our expected naming
+                threshold_mapping = {
+                    'tx90p_threshold': 'tx90p',
+                    'tx10p_threshold': 'tx10p',
+                    'tn90p_threshold': 'tn90p',
+                    'tn10p_threshold': 'tn10p'
+                }
+
+                for file_var, calc_name in threshold_mapping.items():
+                    if file_var in ds.data_vars:
+                        self._baseline_percentiles[calc_name] = ds[file_var]
+                        logger.info(f"  Loaded {calc_name} baseline threshold")
+
+                self._baseline_loaded = True
+                logger.info(f"Successfully loaded {len(self._baseline_percentiles)} baseline percentiles")
+            except Exception as e:
+                raise RuntimeError(f"Failed to load required baseline percentiles: {e}")
+        else:
+            logger.info("No percentile indices configured, baseline data not required")
+
+    def set_baseline_percentiles(self, baseline_percentiles: Dict[str, xr.DataArray]):
+        """
+        Set pre-calculated baseline percentiles for use in chunked processing.
+
+        Parameters:
+        -----------
+        baseline_percentiles : dict
+            Dictionary of pre-calculated percentiles
+        """
+        self._baseline_percentiles = baseline_percentiles
+        logger.info(f"Set {len(baseline_percentiles)} pre-calculated baseline percentiles")
+
     def calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
         Calculate all configured climate indices.
@@ -123,12 +210,15 @@ class ClimateIndicesCalculator:
         # Get target units from config (default to Celsius)
         target_units = self.config.get('processing.temperature_units', 'degC')
 
-        # Ensure all temperature variables are in correct units
+        # Prepare input data with proper CF attributes
         if tas is not None:
+            tas = self._prepare_input_data(tas, 'temperature_mean')
             tas = self._ensure_temperature_units(tas, target_units)
         if tasmax is not None:
+            tasmax = self._prepare_input_data(tasmax, 'temperature_max')
             tasmax = self._ensure_temperature_units(tasmax, target_units)
         if tasmin is not None:
+            tasmin = self._prepare_input_data(tasmin, 'temperature_min')
             tasmin = self._ensure_temperature_units(tasmin, target_units)
 
         # If we only have mean temperature, use it for max/min as well
@@ -142,9 +232,10 @@ class ClimateIndicesCalculator:
             # Mean temperature
             if 'tg_mean' in configured_indices:
                 try:
-                    result = atmos.tg_mean(tas, freq='YS')
-                    indices['tg_mean'] = self._convert_output_to_celsius(result, 'tg_mean')
-                    logger.info("Calculated mean temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tg_mean(tas, freq='YS')
+                        indices['tg_mean'] = self._convert_output_to_celsius(result, 'tg_mean')
+                        logger.info("Calculated mean temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tg_mean: {e}")
         
@@ -152,17 +243,21 @@ class ClimateIndicesCalculator:
             # Maximum temperature
             if 'tx_max' in configured_indices:
                 try:
-                    result = atmos.tx_max(tasmax, freq='YS')
-                    indices['tx_max'] = self._convert_output_to_celsius(result, 'tx_max')
-                    logger.info("Calculated maximum temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tx_max(tasmax, freq='YS')
+                        indices['tx_max'] = self._convert_output_to_celsius(result, 'tx_max')
+                        logger.info("Calculated maximum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tx_max: {e}")
             
             # Summer days (Tmax > 25°C)
             if 'summer_days' in configured_indices:
                 try:
-                    indices['summer_days'] = atmos.summer_days(tasmax, freq='YS')
-                    logger.info("Calculated summer days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 25°C threshold for summer days
+                        result = atmos.tx_days_above(tasmax, thresh='25 degC', freq='YS')
+                        indices['summer_days'] = self._convert_timedelta_to_days(result, 'summer_days')
+                        logger.info("Calculated summer days")
                 except Exception as e:
                     logger.error(f"Error calculating summer_days: {e}")
             
@@ -179,9 +274,10 @@ class ClimateIndicesCalculator:
             # Minimum temperature
             if 'tn_min' in configured_indices:
                 try:
-                    result = atmos.tn_min(tasmin, freq='YS')
-                    indices['tn_min'] = self._convert_output_to_celsius(result, 'tn_min')
-                    logger.info("Calculated minimum temperature")
+                    with suppress_climate_warnings():
+                        result = atmos.tn_min(tasmin, freq='YS')
+                        indices['tn_min'] = self._convert_output_to_celsius(result, 'tn_min')
+                        logger.info("Calculated minimum temperature")
                 except Exception as e:
                     logger.error(f"Error calculating tn_min: {e}")
             
@@ -248,11 +344,17 @@ class ClimateIndicesCalculator:
 
             if 'daily_temperature_range_variability' in configured_indices:
                 try:
-                    result = atmos.daily_temperature_range_variability(
-                        tasmin, tasmax, freq='YS'
-                    )
-                    indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result, 'daily_temperature_range_variability')
-                    logger.info("Calculated daily temperature range variability")
+                    with suppress_climate_warnings():
+                        result = atmos.daily_temperature_range_variability(
+                            tasmin, tasmax, freq='YS'
+                        )
+
+                        # Clean up any inf values that might result from division
+                        if result is not None:
+                            result = result.where(~np.isinf(result))
+
+                        indices['daily_temperature_range_variability'] = self._convert_output_to_celsius(result, 'daily_temperature_range_variability')
+                        logger.info("Calculated daily temperature range variability")
                 except Exception as e:
                     logger.error(f"Error calculating daily_temperature_range_variability: {e}")
 
@@ -261,20 +363,22 @@ class ClimateIndicesCalculator:
             # Hot days (Tmax > 30°C)
             if 'hot_days' in configured_indices:
                 try:
-                    indices['hot_days'] = generic.threshold_count(
-                        tasmax, thresh='30 degC', op='>', freq='YS'
-                    )
-                    logger.info("Calculated hot days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 30°C threshold for hot days
+                        result = atmos.tx_days_above(tasmax, thresh='30 degC', freq='YS')
+                        indices['hot_days'] = self._convert_timedelta_to_days(result, 'hot_days')
+                        logger.info("Calculated hot days")
                 except Exception as e:
                     logger.error(f"Error calculating hot_days: {e}")
 
             # Very hot days (Tmax > 35°C)
             if 'very_hot_days' in configured_indices:
                 try:
-                    indices['very_hot_days'] = generic.threshold_count(
-                        tasmax, thresh='35 degC', op='>', freq='YS'
-                    )
-                    logger.info("Calculated very hot days")
+                    with suppress_climate_warnings():
+                        # Use tx_days_above with 35°C threshold for very hot days
+                        result = atmos.tx_days_above(tasmax, thresh='35 degC', freq='YS')
+                        indices['very_hot_days'] = self._convert_timedelta_to_days(result, 'very_hot_days')
+                        logger.info("Calculated very hot days")
                 except Exception as e:
                     logger.error(f"Error calculating very_hot_days: {e}")
 
@@ -282,10 +386,11 @@ class ClimateIndicesCalculator:
             # Warm nights (Tmin > 15°C)
             if 'warm_nights' in configured_indices:
                 try:
-                    indices['warm_nights'] = generic.threshold_count(
-                        tasmin, thresh='15 degC', op='>', freq='YS'
-                    )
-                    logger.info("Calculated warm nights")
+                    with suppress_climate_warnings():
+                        # Use tn_days_above with 15°C threshold for warm nights
+                        result = atmos.tn_days_above(tasmin, thresh='15 degC', freq='YS')
+                        indices['warm_nights'] = self._convert_timedelta_to_days(result, 'warm_nights')
+                        logger.info("Calculated warm nights")
                 except Exception as e:
                     logger.error(f"Error calculating warm_nights: {e}")
 
@@ -302,76 +407,79 @@ class ClimateIndicesCalculator:
         if tasmax is not None and tasmin is not None:
             if 'tx90p' in configured_indices or 'tx90p' in self.indices_config.get('extremes', []):
                 try:
-                    # Use baseline period if configured, otherwise use cached percentile
-                    if self.use_baseline:
-                        tx90_per = self._calculate_baseline_percentile(tasmax, 0.9)
-                    else:
-                        tx90_per = self._get_cached_percentile(tasmax, 0.9)
+                    # Get or calculate day-of-year specific 90th percentile
+                    # Pre-calculated baseline will be used if available
+                    tx90_per = self._calculate_doy_percentile(tasmax, 90)
                     indices['tx90p'] = atmos.tx90p(
                         tasmax,
                         tasmax_per=tx90_per,
                         freq='YS'
                     )
                     logger.info("Calculated warm days (TX90p)")
-                except Exception as e:
+                except ValueError as e:
                     logger.error(f"Error calculating tx90p: {e}")
+                    raise  # Re-raise to fail pipeline
+                except Exception as e:
+                    logger.error(f"Unexpected error calculating tx90p: {e}")
 
             if 'tn90p' in configured_indices or 'tn90p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile using baseline if configured
-                    if self.use_baseline:
-                        tn90_per = self._calculate_baseline_percentile(tasmin, 0.9)
-                    else:
-                        tn90_per = tasmin.quantile(0.9, dim='time')
-                    tn90 = atmos.tn90p(
+                    # Get or calculate day-of-year specific 90th percentile
+                    # Pre-calculated baseline will be used if available
+                    tn90_per = self._calculate_doy_percentile(tasmin, 90)
+                    indices['tn90p'] = atmos.tn90p(
                         tasmin,
                         tasmin_per=tn90_per,
                         freq='YS'
                     )
-                    indices['tn90p'] = tn90
                     logger.info("Calculated warm nights (TN90p)")
-                except Exception as e:
+                except ValueError as e:
                     logger.error(f"Error calculating tn90p: {e}")
+                    raise  # Re-raise to fail pipeline
+                except Exception as e:
+                    logger.error(f"Unexpected error calculating tn90p: {e}")
 
             if 'tx10p' in configured_indices or 'tx10p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile using baseline if configured
-                    if self.use_baseline:
-                        tx10_per = self._calculate_baseline_percentile(tasmax, 0.1)
-                    else:
-                        tx10_per = tasmax.quantile(0.1, dim='time')
-                    tx10 = atmos.tx10p(
+                    # Get or calculate day-of-year specific 10th percentile
+                    # Pre-calculated baseline will be used if available
+                    tx10_per = self._calculate_doy_percentile(tasmax, 10)
+                    indices['tx10p'] = atmos.tx10p(
                         tasmax,
                         tasmax_per=tx10_per,
                         freq='YS'
                     )
-                    indices['tx10p'] = tx10
                     logger.info("Calculated cool days (TX10p)")
-                except Exception as e:
+                except ValueError as e:
                     logger.error(f"Error calculating tx10p: {e}")
+                    raise  # Re-raise to fail pipeline
+                except Exception as e:
+                    logger.error(f"Unexpected error calculating tx10p: {e}")
 
             if 'tn10p' in configured_indices or 'tn10p' in self.indices_config.get('extremes', []):
                 try:
-                    # Calculate percentile using baseline if configured
-                    if self.use_baseline:
-                        tn10_per = self._calculate_baseline_percentile(tasmin, 0.1)
-                    else:
-                        tn10_per = tasmin.quantile(0.1, dim='time')
-                    tn10 = atmos.tn10p(
+                    # Get or calculate day-of-year specific 10th percentile
+                    # Pre-calculated baseline will be used if available
+                    tn10_per = self._calculate_doy_percentile(tasmin, 10)
+                    indices['tn10p'] = atmos.tn10p(
                         tasmin,
                         tasmin_per=tn10_per,
                         freq='YS'
                     )
-                    indices['tn10p'] = tn10
                     logger.info("Calculated cool nights (TN10p)")
-                except Exception as e:
+                except ValueError as e:
                     logger.error(f"Error calculating tn10p: {e}")
+                    raise  # Re-raise to fail pipeline
+                except Exception as e:
+                    logger.error(f"Unexpected error calculating tn10p: {e}")
 
             # Spell duration indices
             if 'warm_spell_duration_index' in configured_indices or 'wsdi' in self.indices_config.get('extremes', []):
                 try:
+                    # Use day-of-year percentiles for spell duration
+                    tx90_per = self._calculate_doy_percentile(tasmax, 90)
                     indices['warm_spell_duration_index'] = atmos.warm_spell_duration_index(
-                        tasmax, tasmax_per=tasmax.quantile(0.9, dim='time'), freq='YS'
+                        tasmax, tasmax_per=tx90_per, freq='YS'
                     )
                     logger.info("Calculated warm spell duration index")
                 except Exception as e:
@@ -379,8 +487,10 @@ class ClimateIndicesCalculator:
 
             if 'cold_spell_duration_index' in configured_indices or 'csdi' in self.indices_config.get('extremes', []):
                 try:
+                    # Use day-of-year percentiles for spell duration
+                    tn10_per = self._calculate_doy_percentile(tasmin, 10)
                     indices['cold_spell_duration_index'] = atmos.cold_spell_duration_index(
-                        tasmin, tasmin_per=tasmin.quantile(0.1, dim='time'), freq='YS'
+                        tasmin, tasmin_per=tn10_per, freq='YS'
                     )
                     logger.info("Calculated cold spell duration index")
                 except Exception as e:
@@ -487,7 +597,7 @@ class ClimateIndicesCalculator:
                 if self.use_baseline:
                     pr_per = self._calculate_baseline_percentile(pr, 0.95)
                 else:
-                    pr_per = pr.quantile(0.95, dim='time')
+                    pr_per = self._calculate_percentile_with_units(pr, 0.95)
                 indices['r95ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
@@ -502,7 +612,7 @@ class ClimateIndicesCalculator:
                 if self.use_baseline:
                     pr_per = self._calculate_baseline_percentile(pr, 0.99)
                 else:
-                    pr_per = pr.quantile(0.99, dim='time')
+                    pr_per = self._calculate_percentile_with_units(pr, 0.99)
                 indices['r99ptot'] = atmos.days_over_precip_thresh(
                     pr, pr_per, freq='YS'
                 )
@@ -680,8 +790,8 @@ class ClimateIndicesCalculator:
             if 'cold_and_dry_days' in multivariate_indices:
                 try:
                     # Define thresholds (10th percentiles)
-                    tas_thresh = tas.quantile(0.1, dim='time')
-                    pr_thresh = pr.quantile(0.1, dim='time')
+                    tas_thresh = self._calculate_percentile_with_units(tas, 0.1)
+                    pr_thresh = self._calculate_percentile_with_units(pr, 0.1)
 
                     indices['cold_and_dry_days'] = atmos.cold_and_dry_days(
                         tas, pr, tas_per=tas_thresh, pr_per=pr_thresh, freq='YS'
@@ -693,8 +803,8 @@ class ClimateIndicesCalculator:
             if 'warm_and_wet_days' in multivariate_indices:
                 try:
                     # Define thresholds (90th percentiles)
-                    tas_thresh = tas.quantile(0.9, dim='time')
-                    pr_thresh = pr.quantile(0.9, dim='time')
+                    tas_thresh = self._calculate_percentile_with_units(tas, 0.9)
+                    pr_thresh = self._calculate_percentile_with_units(pr, 0.9)
 
                     indices['warm_and_wet_days'] = atmos.warm_and_wet_days(
                         tas, pr, tas_per=tas_thresh, pr_per=pr_thresh, freq='YS'
@@ -706,6 +816,92 @@ class ClimateIndicesCalculator:
         
         return indices
     
+    def _calculate_doy_percentile(self, data: xr.DataArray, per: float, window: int = 5) -> xr.DataArray:
+        """
+        Calculate day-of-year percentiles for extreme indices.
+
+        First checks for pre-calculated baseline percentiles. If available, uses those.
+        Otherwise attempts to calculate from data if sufficient years are present.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Input data with time dimension
+        per : float
+            Percentile (0-100)
+        window : int
+            Number of days around each day of year for percentile calculation
+
+        Returns:
+        --------
+        xr.DataArray
+            Percentile thresholds per day of year
+        """
+        # Check if we have pre-calculated baseline percentiles for this specific percentile
+        # Determine which threshold we need based on the variable and percentile
+        var_name = data.name if hasattr(data, 'name') else None
+
+        # Try to identify the index type from variable name and percentile
+        index_key = None
+        if 'tasmax' in str(var_name).lower() or 'tmax' in str(var_name).lower():
+            if per == 90:
+                index_key = 'tx90p'
+            elif per == 10:
+                index_key = 'tx10p'
+        elif 'tasmin' in str(var_name).lower() or 'tmin' in str(var_name).lower():
+            if per == 90:
+                index_key = 'tn90p'
+            elif per == 10:
+                index_key = 'tn10p'
+
+        # If we have a pre-calculated baseline for this index, use it
+        if index_key and index_key in self._baseline_percentiles:
+            logger.info(f"Using pre-calculated baseline percentile for {index_key}")
+            return self._baseline_percentiles[index_key]
+
+        # No fallback - percentile indices require pre-calculated baselines
+        raise RuntimeError(
+            f"No pre-calculated baseline found for {index_key or f'percentile {per}'}. "
+            f"Percentile indices require pre-calculated baseline data.\n"
+            f"Run 'python src/calculate_baseline_percentiles.py' first and place the output in data/baselines/"
+        )
+
+    # REMOVED: _calculate_simple_percentile_for_extremes method
+    # This fallback logic has been removed to ensure percentile calculations
+    # are only done with sufficient data. The pipeline will now fail
+    # explicitly if less than 5 years of data are provided for percentile
+    # calculations, preventing misleading results.
+
+    def _calculate_percentile_with_units(self, data: xr.DataArray, percentile: float, dim: str = 'time') -> xr.DataArray:
+        """
+        Calculate percentile while preserving units attribute.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Data to calculate percentile from
+        percentile : float
+            Percentile value (0-1)
+        dim : str
+            Dimension to calculate percentile along
+
+        Returns:
+        --------
+        xr.DataArray
+            Percentile with preserved units
+        """
+        # Store original units attribute
+        original_units = data.attrs.get('units', None)
+
+        # Calculate percentile
+        percentile_data = data.quantile(percentile, dim=dim)
+
+        # Restore units attribute - critical for xclim functions
+        if original_units:
+            percentile_data.attrs['units'] = original_units
+
+        return percentile_data
+
     def _get_cached_percentile(self, data: xr.DataArray, percentile: float, dim: str = 'time') -> xr.DataArray:
         """
         Get cached percentile calculation to avoid redundant computations.
@@ -728,7 +924,8 @@ class ClimateIndicesCalculator:
         cache_key = f"{data.name}_{percentile}_{dim}"
 
         if cache_key not in self._percentile_cache:
-            self._percentile_cache[cache_key] = data.quantile(percentile, dim=dim)
+            # Use the helper method that preserves units
+            self._percentile_cache[cache_key] = self._calculate_percentile_with_units(data, percentile, dim)
 
         return self._percentile_cache[cache_key]
 
@@ -782,6 +979,38 @@ class ClimateIndicesCalculator:
                         return var
         return None
 
+
+    def _prepare_input_data(self, data: xr.DataArray, var_type: str = 'temperature') -> xr.DataArray:
+        """
+        Prepare input data with proper CF attributes to avoid warnings.
+
+        Parameters:
+        -----------
+        data : xr.DataArray
+            Input data array
+        var_type : str
+            Type of variable ('temperature', 'precipitation', etc.)
+
+        Returns:
+        --------
+        xr.DataArray
+            Data with proper CF attributes
+        """
+        if data is None:
+            return None
+
+        # Add cell_methods if not present
+        if 'cell_methods' not in data.attrs:
+            if 'tas' in str(data.name) or 'mean' in str(var_type):
+                data.attrs['cell_methods'] = 'time: mean'
+            elif 'max' in str(data.name) or 'tasmax' in str(data.name):
+                data.attrs['cell_methods'] = 'time: maximum'
+            elif 'min' in str(data.name) or 'tasmin' in str(data.name):
+                data.attrs['cell_methods'] = 'time: minimum'
+            else:
+                data.attrs['cell_methods'] = 'time: point'
+
+        return data
 
     def _ensure_temperature_units(self, data: xr.DataArray, target_units: str = 'degC') -> xr.DataArray:
         """
@@ -881,6 +1110,27 @@ class ClimateIndicesCalculator:
             return result_days
         return result
 
+    def _add_cell_methods(self, result: xr.DataArray, method: str = "time: mean") -> xr.DataArray:
+        """
+        Add cell_methods attribute to comply with CF conventions and avoid warnings.
+
+        Parameters:
+        -----------
+        result : xr.DataArray
+            Result data array
+        method : str
+            Cell methods string (default: "time: mean")
+
+        Returns:
+        --------
+        xr.DataArray
+            Data array with cell_methods attribute
+        """
+        if result is not None and hasattr(result, 'attrs'):
+            if 'cell_methods' not in result.attrs:
+                result.attrs['cell_methods'] = method
+        return result
+
     def _convert_output_to_celsius(self, result: xr.DataArray, index_name: str) -> xr.DataArray:
         """
         Convert temperature outputs to Celsius using xclim's built-in conversion.
@@ -902,10 +1152,23 @@ class ClimateIndicesCalculator:
 
         try:
             # Use xclim's built-in unit conversion
-            return convert_units_to(result, 'degC')
+            result = convert_units_to(result, 'degC')
         except Exception as e:
             logger.debug(f"Could not convert output units for {index_name}: {e}")
-            return result
+
+        # Add appropriate cell_methods based on index type
+        if 'mean' in index_name or 'tg_' in index_name:
+            result = self._add_cell_methods(result, "time: mean")
+        elif 'max' in index_name or 'tx_' in index_name:
+            result = self._add_cell_methods(result, "time: maximum")
+        elif 'min' in index_name or 'tn_' in index_name:
+            result = self._add_cell_methods(result, "time: minimum")
+        elif any(x in index_name for x in ['days', 'count', 'frost', 'ice', 'tropical']):
+            result = self._add_cell_methods(result, "time: sum")
+        else:
+            result = self._add_cell_methods(result, "time: mean")
+
+        return result
 
     def _validate_variable(self, var: xr.DataArray, expected_name: str) -> bool:
         """
@@ -971,9 +1234,15 @@ class ClimateIndicesCalculator:
             # Check for excessive missing values
             if hasattr(var, 'isnull'):
                 missing_fraction = float(var.isnull().sum()) / var.size
-                if missing_fraction > 0.5:
-                    logger.warning(f"Variable {var.name} has {missing_fraction:.1%} missing values")
+                # For gridded climate data, ~40-50% missing is normal (ocean/water mask)
+                if 0.40 <= missing_fraction <= 0.50:
+                    # Expected ocean masking - only log at debug level
+                    logger.debug(f"Variable {var.name} has {missing_fraction:.1%} missing values (ocean mask)")
+                elif missing_fraction > 0.50:
+                    # Higher than expected even with ocean mask
+                    logger.warning(f"Variable {var.name} has {missing_fraction:.1%} missing values (unexpectedly high)")
                 elif missing_fraction > 0.1:
+                    # Some missing data but not ocean mask levels
                     logger.info(f"Variable {var.name} has {missing_fraction:.1%} missing values")
 
             return True
@@ -1029,10 +1298,10 @@ class ClimateIndicesCalculator:
             Percentile threshold from baseline period
         """
         if not self.use_baseline:
-            return data.quantile(percentile, dim='time')
-
-        baseline_data = self._get_baseline_data(data)
-        return baseline_data.quantile(percentile, dim='time')
+            return self._calculate_percentile_with_units(data, percentile)
+        else:
+            baseline_data = self._get_baseline_data(data)
+            return self._calculate_percentile_with_units(baseline_data, percentile)
 
     def save_indices(self, output_path: str, format: str = 'netcdf'):
         """
