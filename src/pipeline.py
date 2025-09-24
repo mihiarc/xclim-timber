@@ -1,366 +1,457 @@
 #!/usr/bin/env python
 """
-Main pipeline orchestrator for xclim climate data processing.
-Zarr-exclusive implementation for efficient large-scale data processing.
+Main climate data processing pipeline.
+Optimized for Zarr stores with streaming and temporal chunking.
 """
 
 import logging
-import sys
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-import warnings
-import traceback
-
-import click
-import yaml
-from tqdm import tqdm
+from typing import Dict, List, Optional, Union, Tuple
 import xarray as xr
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+import numpy as np
+from datetime import datetime
+import warnings
+import dask
+import dask.array as da
+from dask.distributed import Client, as_completed
+import zarr
+from tqdm import tqdm
 
 from config import Config
-from data_loader import ClimateDataLoader
-from preprocessor import ClimateDataPreprocessor
-from indices_calculator import ClimateIndicesCalculator
+from indices import ClimateIndicesCalculator
+from calculate_baseline_percentiles import BaselinePercentileCalculator
 
+# Suppress common warnings for climate data processing
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
+warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
+warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
 
-# Configure logging
-def setup_logging(log_path: Path, verbose: bool = False):
-    """Setup logging configuration."""
-    log_level = logging.DEBUG if verbose else logging.INFO
-    
-    # Create formatters
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    console_formatter = logging.Formatter(
-        '%(levelname)s: %(message)s'
-    )
-    
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-    
-    # File handler
-    log_file = log_path / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(file_formatter)
-    root_logger.addHandler(file_handler)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
-    
-    return log_file
+logger = logging.getLogger(__name__)
 
 
 class ClimateDataPipeline:
-    """Main pipeline orchestrator for climate data processing."""
-    
-    def __init__(self, config_path: Optional[str] = None, verbose: bool = False):
+    """
+    Main climate data processing pipeline.
+
+    Key Features:
+    - Optimized for Zarr stores with streaming reads
+    - Processes data in temporal chunks to minimize memory
+    - Calculates all 84 climate indices
+    - Supports point extraction for parcel data
+    """
+
+    def __init__(self, config_path: str, chunk_years: int = 1, enable_dashboard: bool = True):
         """
-        Initialize the pipeline.
+        Initialize climate data pipeline.
 
         Parameters:
         -----------
-        config_path : str, optional
+        config_path : str
             Path to configuration file
-        verbose : bool
-            Enable verbose logging
+        chunk_years : int
+            Number of years to process at once (default: 1)
+        enable_dashboard : bool
+            Whether to enable Dask dashboard (default: True)
         """
         self.config = Config(config_path)
-        self.verbose = verbose
-        self.datasets = {}
-        self.processed_datasets = {}
-        self.indices = {}
+        self.chunk_years = chunk_years
+        self.enable_dashboard = enable_dashboard
+        self.client = None
 
         # Setup logging
-        log_file = setup_logging(self.config.log_path, verbose)
-        self.logger = logging.getLogger(__name__)
-        self.logger.info(f"Pipeline initialized. Log file: {log_file}")
+        self._setup_logging()
 
-        # Validate configuration
-        if not self.config.validate():
-            raise ValueError("Configuration validation failed")
-    
-    def load_data(self, variables: Optional[List[str]] = None) -> Dict[str, xr.Dataset]:
-        """
-        Load climate data from Zarr stores.
+    def _setup_logging(self):
+        """Configure logging."""
+        log_level = logging.DEBUG if self.config.get('verbose', False) else logging.INFO
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
 
-        Parameters:
-        -----------
-        variables : list, optional
-            List of variables to load (default: all configured)
+    def _setup_dask_client(self):
+        """Initialize Dask client for parallel processing."""
+        if self.client is None:
+            n_workers = self.config.get('processing.dask.n_workers', 4)
+            memory_limit = self.config.get('processing.dask.memory_limit', '4GB')
+            # Use instance variable, fallback to config, then default to True
+            enable_dashboard = self.enable_dashboard if hasattr(self, 'enable_dashboard') else self.config.get('processing.dask.dashboard', True)
 
-        Returns:
-        --------
-        dict
-            Dictionary of loaded datasets
-        """
-        self.logger.info("=== Data Loading Phase (Zarr) ===")
-
-        loader = ClimateDataLoader(self.config)
-
-        if variables is None:
-            # Get variables from zarr_stores configuration
-            variables = list(self.config.get('data.zarr_stores', {}).keys())
-
-        for var in tqdm(variables, desc="Loading Zarr stores"):
-            self.logger.info(f"Loading {var} data from Zarr")
             try:
-                ds = loader.load_variable_data(var)
-                if ds is not None:
-                    self.datasets[var] = ds
-                    self.logger.info(f"Loaded {var}: shape={dict(ds.dims)}")
+                if enable_dashboard:
+                    # Dashboard enabled - may have visualization issues with complex graphs
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=':8787',
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask dashboard: http://localhost:8787")
                 else:
-                    self.logger.warning(f"No Zarr stores found for {var}")
+                    # Dashboard disabled for cleaner processing
+                    self.client = Client(
+                        n_workers=n_workers,
+                        threads_per_worker=1,
+                        memory_limit=memory_limit,
+                        dashboard_address=None,
+                        silence_logs=logging.ERROR
+                    )
+                    logger.info(f"Dask client initialized (dashboard disabled)")
             except Exception as e:
-                self.logger.error(f"Error loading {var}: {e}")
-                if self.verbose:
-                    self.logger.debug(traceback.format_exc())
-        
-        # Print summary
-        info = loader.get_info()
-        for name, details in info.items():
-            self.logger.info(f"{name}: {details['memory_size']:.2f} GB, "
-                           f"dimensions: {details['dimensions']}")
-        
-        return self.datasets
-    
-    def preprocess_data(self) -> Dict[str, xr.Dataset]:
-        """
-        Preprocess loaded datasets.
-        
-        Returns:
-        --------
-        dict
-            Dictionary of preprocessed datasets
-        """
-        self.logger.info("=== Data Preprocessing Phase ===")
-        
-        preprocessor = ClimateDataPreprocessor(self.config)
-        
-        for var_name, ds in tqdm(self.datasets.items(), desc="Preprocessing"):
-            self.logger.info(f"Preprocessing {var_name}")
-            try:
-                processed = preprocessor.preprocess(ds, variable_type=var_name)
-                
-                
-                self.processed_datasets[var_name] = processed
-                self.logger.info(f"Preprocessed {var_name}: shape={dict(processed.dims)}")
-                
-            except Exception as e:
-                self.logger.error(f"Error preprocessing {var_name}: {e}")
-                if self.verbose:
-                    self.logger.debug(traceback.format_exc())
-                # Keep original if preprocessing fails
-                self.processed_datasets[var_name] = ds
-        
-        return self.processed_datasets
-    
-    def calculate_indices(self) -> Dict[str, xr.DataArray]:
-        """
-        Calculate climate indices.
-        
-        Returns:
-        --------
-        dict
-            Dictionary of calculated indices
-        """
-        self.logger.info("=== Climate Indices Calculation Phase ===")
-        
-        calculator = ClimateIndicesCalculator(self.config)
-        
-        try:
-            self.indices = calculator.calculate_all_indices(self.processed_datasets)
-            
-            # Print summary
-            summary = calculator.get_summary()
-            for name, stats in summary.items():
-                self.logger.info(f"{name}: mean={stats['mean']:.2f}, "
-                               f"std={stats['std']:.2f}, "
-                               f"range=[{stats['min']:.2f}, {stats['max']:.2f}]")
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating indices: {e}")
-            if self.verbose:
-                self.logger.debug(traceback.format_exc())
-        
-        return self.indices
-    
-    def save_results(self, output_dir: Optional[Path] = None):
-        """
-        Save processed data and indices.
-        
-        Parameters:
-        -----------
-        output_dir : Path, optional
-            Output directory (default: from config)
-        """
-        self.logger.info("=== Saving Results ===")
-        
-        if output_dir is None:
-            output_dir = self.config.output_path
-        
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save indices
-        if self.indices:
-            indices_file = output_dir / f"climate_indices_{datetime.now().strftime('%Y%m%d')}.nc"
-            
-            calculator = ClimateIndicesCalculator(self.config)
-            calculator.results = self.indices
-            calculator.save_indices(
-                str(indices_file),
-                format=self.config.get('output.format', 'netcdf')
-            )
-            self.logger.info(f"Saved indices to {indices_file}")
-        
-        # Save preprocessed data if requested
-        save_preprocessed = self.config.get('output.save_preprocessed', False)
-        if save_preprocessed and self.processed_datasets:
-            for var_name, ds in self.processed_datasets.items():
-                output_file = output_dir / f"{var_name}_preprocessed.nc"
-                
-                compression = self.config.get('output.compression', {})
-                ds.to_netcdf(
-                    output_file,
-                    engine=compression.get('engine', 'h5netcdf'),
-                    encoding={
-                        var: {'zlib': True, 'complevel': compression.get('complevel', 4)}
-                        for var in ds.data_vars
-                    }
+                # Fallback to simple client without dashboard
+                logger.warning(f"Could not initialize Dask client with dashboard: {e}")
+                self.client = Client(
+                    n_workers=n_workers,
+                    threads_per_worker=1,
+                    memory_limit=memory_limit,
+                    dashboard_address=None,
+                    silence_logs=logging.ERROR
                 )
-                self.logger.info(f"Saved preprocessed {var_name} to {output_file}")
-    
-    def run(self, variables: Optional[List[str]] = None):
+                logger.info(f"Dask client initialized (dashboard disabled due to error)")
+
+    def _get_zarr_stores(self) -> Dict[str, str]:
         """
-        Run the complete pipeline.
-        
-        Parameters:
-        -----------
-        variables : list, optional
-            List of variables to process
-        """
-        self.logger.info("=" * 50)
-        self.logger.info("Starting Climate Data Pipeline")
-        self.logger.info("=" * 50)
-        
-        start_time = datetime.now()
-        
-        try:
-            # Load data
-            self.load_data(variables)
-            
-            if not self.datasets:
-                self.logger.error("No data loaded. Exiting.")
-                return
-            
-            # Preprocess data
-            self.preprocess_data()
-            
-            # Calculate indices
-            self.calculate_indices()
-            
-            # Save results
-            self.save_results()
-            
-            # Report completion
-            elapsed_time = datetime.now() - start_time
-            self.logger.info("=" * 50)
-            self.logger.info(f"Pipeline completed successfully in {elapsed_time}")
-            self.logger.info(f"Processed {len(self.datasets)} variables")
-            self.logger.info(f"Calculated {len(self.indices)} indices")
-            self.logger.info("=" * 50)
-            
-        except Exception as e:
-            self.logger.error(f"Pipeline failed: {e}")
-            if self.verbose:
-                self.logger.debug(traceback.format_exc())
-            raise
-        
-        finally:
-            # Cleanup (no dask client to close)
-            pass
-    
-    def get_status(self) -> Dict:
-        """
-        Get current pipeline status.
-        
+        Get paths to Zarr stores for each variable.
+
         Returns:
         --------
         dict
-            Status information
+            Mapping of variable names to Zarr store paths
         """
-        return {
-            'datasets_loaded': list(self.datasets.keys()),
-            'datasets_processed': list(self.processed_datasets.keys()),
-            'indices_calculated': list(self.indices.keys()),
-            'config': {
-                'input_path': str(self.config.input_path),
-                'output_path': str(self.config.output_path),
+        stores = {}
+        base_path = Path(self.config.get('data.input_path'))
+
+        # Try multiple possible Zarr store configurations
+        zarr_configs = [
+            # Primary configuration - PRISM data structure
+            {
+                'temperature': base_path / 'prism.zarr/temperature',
+                'precipitation': base_path / 'prism.zarr/precipitation',
+                'humidity': base_path / 'prism.zarr/humidity'
+            },
+            # Alternative configuration - flat structure
+            {
+                'temperature': base_path / 'temperature.zarr',
+                'precipitation': base_path / 'precipitation.zarr',
+                'humidity': base_path / 'humidity.zarr'
+            },
+            # Alternative configuration - nested by variable
+            {
+                'temperature': base_path / 'zarr/temperature',
+                'precipitation': base_path / 'zarr/precipitation',
+                'humidity': base_path / 'zarr/humidity'
             }
+        ]
+
+        # Try each configuration
+        for config_idx, zarr_config in enumerate(zarr_configs):
+            config_stores = {}
+            for var, path in zarr_config.items():
+                if path.exists():
+                    config_stores[var] = str(path)
+                    logger.info(f"Found {var} store at {path}")
+
+            # If we found at least one store with this config, use it
+            if config_stores:
+                stores.update(config_stores)
+                if config_idx > 0:
+                    logger.info(f"Using alternative Zarr configuration #{config_idx + 1}")
+                break
+
+        # Log detailed information about missing stores
+        if not stores:
+            logger.error("=" * 60)
+            logger.error("NO ZARR STORES FOUND")
+            logger.error("=" * 60)
+            logger.error(f"Base path: {base_path}")
+            logger.error("\nSearched for stores at:")
+            for zarr_config in zarr_configs:
+                for var, path in zarr_config.items():
+                    exists = "✓ EXISTS" if path.exists() else "✗ NOT FOUND"
+                    logger.error(f"  {var}: {path} [{exists}]")
+            logger.error("\nPlease ensure Zarr stores are available at one of these locations.")
+
+        return stores
+
+    def _get_time_chunks(self, zarr_path: str,
+                        start_year: int, end_year: int) -> List[Tuple[str, str]]:
+        """
+        Generate time chunks for processing.
+
+        Parameters:
+        -----------
+        zarr_path : str
+            Path to Zarr store
+        start_year : int
+            Start year for processing
+        end_year : int
+            End year for processing
+
+        Returns:
+        --------
+        list
+            List of (start_date, end_date) tuples for each chunk
+        """
+        chunks = []
+        current_year = start_year
+
+        while current_year <= end_year:
+            chunk_end = min(current_year + self.chunk_years - 1, end_year)
+            start_date = f"{current_year}-01-01"
+            end_date = f"{chunk_end}-12-31"
+            chunks.append((start_date, end_date))
+            current_year = chunk_end + 1
+
+        return chunks
+
+    def process_single_chunk(self,
+                           stores: Dict[str, str],
+                           time_range: Tuple[str, str],
+                           output_path: Path) -> Dict:
+        """
+        Process a single time chunk.
+
+        Parameters:
+        -----------
+        stores : dict
+            Zarr store paths
+        time_range : tuple
+            (start_date, end_date) for this chunk
+        output_path : Path
+            Where to save results
+
+        Returns:
+        --------
+        dict
+            Metadata about processed chunk
+        """
+        start_date, end_date = time_range
+        logger.info(f"Processing chunk: {start_date} to {end_date}")
+
+        # Load only the required time slice - data stays lazy!
+        datasets = {}
+        for var, store_path in stores.items():
+            # Open with chunks - this is LAZY, no data loaded yet
+            ds = xr.open_zarr(store_path, chunks='auto')
+
+            # Select time range - still lazy!
+            if 'time' in ds.dims:
+                ds = ds.sel(time=slice(start_date, end_date))
+
+            datasets[var] = ds
+            logger.debug(f"Loaded {var} chunk: {ds.dims}")
+
+        # Calculate indices - computation happens here
+        calculator = ClimateIndicesCalculator()
+
+        # Load baseline percentiles if needed
+        baseline_calc = BaselinePercentileCalculator()
+        baseline_percentiles = baseline_calc.load_percentiles(
+            self.config.get('baseline.percentiles_path', 'data/baselines/baseline_percentiles.nc')
+        )
+
+        # Calculate all indices with the new modular system
+        indices = calculator.calculate_all(
+            datasets,
+            baseline_percentiles,
+            categories=self.config.get('indices.categories'),
+            freq=self.config.get('indices.frequency', 'YS')
+        )
+
+        # Combine indices into single dataset
+        result_ds = xr.Dataset(indices)
+        result_ds.attrs['time_range'] = f"{start_date} to {end_date}"
+
+        # Save chunk results immediately to free memory
+        chunk_file = output_path / f"indices_{start_date[:4]}_{end_date[:4]}.nc"
+
+        # Use compute() to trigger calculation and save
+        with dask.config.set(scheduler='threads'):
+            result_ds.to_netcdf(chunk_file,
+                              engine='netcdf4',
+                              encoding={var: {'zlib': True, 'complevel': 4}
+                                      for var in result_ds.data_vars})
+
+        logger.info(f"Saved chunk to {chunk_file}")
+
+        # Return metadata only, not the actual data
+        return {'chunk': time_range, 'file': str(chunk_file),
+                'indices': list(result_ds.data_vars)}
+
+    def run_streaming(self,
+                     variables: List[str],
+                     start_year: int = 2001,
+                     end_year: int = 2024) -> Dict:
+        """
+        Run the pipeline in streaming mode.
+
+        Parameters:
+        -----------
+        variables : list
+            Variables to process
+        start_year : int
+            Start year
+        end_year : int
+            End year
+
+        Returns:
+        --------
+        dict
+            Processing summary
+        """
+        logger.info("=" * 80)
+        logger.info("STREAMING CLIMATE PIPELINE")
+        logger.info("=" * 80)
+        logger.info(f"Processing period: {start_year}-{end_year}")
+        logger.info(f"Chunk size: {self.chunk_years} year(s)")
+        logger.info(f"Variables: {variables}")
+
+        # Setup
+        self._setup_dask_client()
+        output_path = Path(self.config.get('data.output_path'))
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Get Zarr stores
+        all_stores = self._get_zarr_stores()
+        stores = {k: v for k, v in all_stores.items() if k in variables}
+
+        if not stores:
+            logger.error("No valid Zarr stores found for requested variables")
+
+            # Provide detailed error information
+            error_details = []
+            if not all_stores:
+                error_details.append("No Zarr stores found at any configured location")
+            else:
+                available = list(all_stores.keys())
+                error_details.append(f"Available variables: {available}")
+                error_details.append(f"Requested variables: {variables}")
+                missing = [v for v in variables if v not in all_stores]
+                if missing:
+                    error_details.append(f"Missing variables: {missing}")
+
+            error_msg = "No stores found. " + ". ".join(error_details)
+            return {'status': 'failed', 'error': error_msg}
+
+        # Generate time chunks
+        sample_store = next(iter(stores.values()))
+        time_chunks = self._get_time_chunks(sample_store, start_year, end_year)
+
+        logger.info(f"Processing {len(time_chunks)} time chunks")
+
+        # Process chunks sequentially with memory cleanup
+        results = []
+
+        for time_range in tqdm(time_chunks, desc="Processing chunks"):
+            try:
+                result = self.process_single_chunk(stores, time_range, output_path)
+                results.append(result)
+
+                # Force garbage collection between chunks
+                import gc
+                gc.collect()
+
+            except Exception as e:
+                logger.error(f"Chunk {time_range} failed: {e}")
+                continue
+
+        # Combine chunk outputs into final dataset
+        if results:
+            self._combine_chunks(results, output_path)
+
+        logger.info("=" * 80)
+        logger.info("STREAMING PROCESSING COMPLETE")
+        logger.info("=" * 80)
+
+        return {
+            'status': 'success',
+            'chunks_processed': len(results),
+            'total_chunks': len(time_chunks),
+            'output_path': str(output_path),
+            'chunk_files': [r['file'] for r in results]
         }
 
+    def _combine_chunks(self, chunks: List[Dict], output_path: Path):
+        """
+        Combine individual chunk files into single output.
 
-# CLI Interface
-@click.command()
-@click.option('--config', '-c', 
-              type=click.Path(exists=True),
-              help='Path to configuration file')
-@click.option('--variables', '-v',
-              multiple=True,
-              help='Variables to process (can specify multiple)')
-@click.option('--output', '-o',
-              type=click.Path(),
-              help='Output directory')
-@click.option('--verbose', 
-              is_flag=True,
-              help='Enable verbose logging')
-@click.option('--create-config',
-              is_flag=True,
-              help='Create a sample configuration file')
-def main(config, variables, output, verbose, create_config):
-    """
-    xclim-timber: Climate Data Processing Pipeline
-    
-    Process climate raster data and calculate indices using xclim.
-    """
-    
-    if create_config:
-        # Create sample configuration
-        sample_config = Config()
-        sample_config.save('config_sample.yaml')
-        click.echo("Sample configuration saved to config_sample.yaml")
-        click.echo("Edit this file to customize your pipeline settings.")
-        return
-    
-    # Run pipeline
+        Parameters:
+        -----------
+        chunks : list
+            List of chunk metadata
+        output_path : Path
+            Output directory
+        """
+        logger.info("Combining chunk outputs...")
+
+        # Get all chunk files
+        chunk_files = [c['file'] for c in chunks]
+
+        # Open all chunks lazily with proper resource management
+        datasets = []
+        try:
+            for file in sorted(chunk_files):
+                ds = xr.open_dataset(file, chunks='auto')
+                datasets.append(ds)
+
+            # Concatenate along time dimension
+            combined = xr.concat(datasets, dim='time')
+
+            # Save combined output
+            output_file = output_path / 'combined_indices.nc'
+
+            # Save with compression
+            encoding = {var: {'zlib': True, 'complevel': 4}
+                       for var in combined.data_vars}
+
+            combined.to_netcdf(output_file, engine='netcdf4', encoding=encoding)
+            logger.info(f"Saved combined output to {output_file}")
+
+        finally:
+            # Ensure all datasets are closed to free resources
+            for ds in datasets:
+                try:
+                    ds.close()
+                except:
+                    pass  # Ignore errors when closing
+
+    def close(self):
+        """Clean up resources."""
+        if self.client:
+            self.client.close()
+
+
+def main():
+    """Example usage of streaming pipeline."""
+    import sys
+
+    # Configuration
+    config_path = 'configs/config_comprehensive_2001_2024.yaml'
+
+    # Initialize pipeline with 1-year chunks
+    pipeline = StreamingClimatePipeline(config_path, chunk_years=1)
+
     try:
-        pipeline = ClimateDataPipeline(config, verbose)
-        
-        if output:
-            pipeline.config.set('data.output_path', output)
-        
-        pipeline.run(list(variables) if variables else None)
-        
-        click.echo("\n✓ Pipeline completed successfully!")
-        
-        # Print summary
-        status = pipeline.get_status()
-        click.echo(f"\nProcessed variables: {', '.join(status['datasets_processed'])}")
-        click.echo(f"Calculated indices: {', '.join(status['indices_calculated'])}")
-        
-    except Exception as e:
-        click.echo(f"\n✗ Pipeline failed: {e}", err=True)
-        sys.exit(1)
+        # Run streaming processing
+        results = pipeline.run_streaming(
+            variables=['temperature', 'precipitation'],
+            start_year=2001,
+            end_year=2024
+        )
+
+        print("\nProcessing Results:")
+        print(f"Status: {results['status']}")
+        print(f"Chunks processed: {results['chunks_processed']}/{results['total_chunks']}")
+        print(f"Output: {results['output_path']}")
+
+    finally:
+        pipeline.close()
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())
