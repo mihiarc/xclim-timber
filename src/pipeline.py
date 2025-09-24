@@ -1,296 +1,214 @@
 #!/usr/bin/env python
 """
-Main climate data processing pipeline.
-Optimized for Zarr stores with streaming and temporal chunking.
+Simplified climate data processing pipeline for PRISM Zarr data.
+Streamlined for single-source, pre-processed data.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Tuple
 import xarray as xr
-import numpy as np
 from datetime import datetime
 import warnings
-import dask
-import dask.array as da
-from dask.distributed import Client, as_completed
-import zarr
-from tqdm import tqdm
 
 from config import Config
-from indices import ClimateIndicesCalculator
-from calculate_baseline_percentiles import BaselinePercentileCalculator
+from data_loader import PrismDataLoader
+from indices_calculator import ClimateIndicesCalculator
 
-# Suppress common warnings for climate data processing
+# Suppress common warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
-warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
 
 logger = logging.getLogger(__name__)
 
 
-class ClimateDataPipeline:
+class PrismPipeline:
     """
-    Main climate data processing pipeline.
+    Simplified climate data processing pipeline for PRISM data.
 
-    Key Features:
-    - Optimized for Zarr stores with streaming reads
-    - Processes data in temporal chunks to minimize memory
-    - Calculates all 84 climate indices
-    - Supports point extraction for parcel data
+    Key simplifications:
+    - Direct loading from known Zarr stores (no pattern matching)
+    - No preprocessing (PRISM data is already clean)
+    - Streamlined configuration
     """
 
-    def __init__(self, config_path: str, chunk_years: int = 1, enable_dashboard: bool = True):
+    def __init__(self, config_path: Optional[str] = None):
         """
-        Initialize climate data pipeline.
+        Initialize pipeline.
 
         Parameters:
         -----------
-        config_path : str
-            Path to configuration file
-        chunk_years : int
-            Number of years to process at once (default: 1)
-        enable_dashboard : bool
-            Whether to enable Dask dashboard (default: True)
+        config_path : str, optional
+            Path to configuration file (uses defaults if not provided)
         """
         self.config = Config(config_path)
-        self.chunk_years = chunk_years
-        self.enable_dashboard = enable_dashboard
-        self.client = None
+        self.loader = PrismDataLoader(self.config)
+        self.calculator = ClimateIndicesCalculator(self.config)
 
         # Setup logging
         self._setup_logging()
 
+        # Create output directory
+        self.config.output_path.mkdir(parents=True, exist_ok=True)
+
     def _setup_logging(self):
         """Configure logging."""
-        log_level = logging.DEBUG if self.config.get('verbose', False) else logging.INFO
         logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler(self.config.log_path / 'pipeline.log')
+            ]
         )
 
-    def _setup_dask_client(self):
-        """Initialize Dask client for parallel processing."""
-        if self.client is None:
-            n_workers = self.config.get('processing.dask.n_workers', 4)
-            memory_limit = self.config.get('processing.dask.memory_limit', '4GB')
-            # Use instance variable, fallback to config, then default to True
-            enable_dashboard = self.enable_dashboard if hasattr(self, 'enable_dashboard') else self.config.get('processing.dask.dashboard', True)
-
-            try:
-                if enable_dashboard:
-                    # Dashboard enabled - may have visualization issues with complex graphs
-                    self.client = Client(
-                        n_workers=n_workers,
-                        threads_per_worker=1,
-                        memory_limit=memory_limit,
-                        dashboard_address=':8787',
-                        silence_logs=logging.ERROR
-                    )
-                    logger.info(f"Dask dashboard: http://localhost:8787")
-                else:
-                    # Dashboard disabled for cleaner processing
-                    self.client = Client(
-                        n_workers=n_workers,
-                        threads_per_worker=1,
-                        memory_limit=memory_limit,
-                        dashboard_address=None,
-                        silence_logs=logging.ERROR
-                    )
-                    logger.info(f"Dask client initialized (dashboard disabled)")
-            except Exception as e:
-                # Fallback to simple client without dashboard
-                logger.warning(f"Could not initialize Dask client with dashboard: {e}")
-                self.client = Client(
-                    n_workers=n_workers,
-                    threads_per_worker=1,
-                    memory_limit=memory_limit,
-                    dashboard_address=None,
-                    silence_logs=logging.ERROR
-                )
-                logger.info(f"Dask client initialized (dashboard disabled due to error)")
-
-    def _get_zarr_stores(self) -> Dict[str, str]:
+    def run(self,
+            start_year: Optional[int] = None,
+            end_year: Optional[int] = None,
+            indices_categories: Optional[List[str]] = None) -> xr.Dataset:
         """
-        Get paths to Zarr stores for each variable.
-
-        Returns:
-        --------
-        dict
-            Mapping of variable names to Zarr store paths
-        """
-        stores = {}
-        base_path = Path(self.config.get('data.input_path'))
-
-        # Try multiple possible Zarr store configurations
-        zarr_configs = [
-            # Primary configuration - PRISM data structure
-            {
-                'temperature': base_path / 'prism.zarr/temperature',
-                'precipitation': base_path / 'prism.zarr/precipitation',
-                'humidity': base_path / 'prism.zarr/humidity'
-            },
-            # Alternative configuration - flat structure
-            {
-                'temperature': base_path / 'temperature.zarr',
-                'precipitation': base_path / 'precipitation.zarr',
-                'humidity': base_path / 'humidity.zarr'
-            },
-            # Alternative configuration - nested by variable
-            {
-                'temperature': base_path / 'zarr/temperature',
-                'precipitation': base_path / 'zarr/precipitation',
-                'humidity': base_path / 'zarr/humidity'
-            }
-        ]
-
-        # Try each configuration
-        for config_idx, zarr_config in enumerate(zarr_configs):
-            config_stores = {}
-            for var, path in zarr_config.items():
-                if path.exists():
-                    config_stores[var] = str(path)
-                    logger.info(f"Found {var} store at {path}")
-
-            # If we found at least one store with this config, use it
-            if config_stores:
-                stores.update(config_stores)
-                if config_idx > 0:
-                    logger.info(f"Using alternative Zarr configuration #{config_idx + 1}")
-                break
-
-        # Log detailed information about missing stores
-        if not stores:
-            logger.error("=" * 60)
-            logger.error("NO ZARR STORES FOUND")
-            logger.error("=" * 60)
-            logger.error(f"Base path: {base_path}")
-            logger.error("\nSearched for stores at:")
-            for zarr_config in zarr_configs:
-                for var, path in zarr_config.items():
-                    exists = "✓ EXISTS" if path.exists() else "✗ NOT FOUND"
-                    logger.error(f"  {var}: {path} [{exists}]")
-            logger.error("\nPlease ensure Zarr stores are available at one of these locations.")
-
-        return stores
-
-    def _get_time_chunks(self, zarr_path: str,
-                        start_year: int, end_year: int) -> List[Tuple[str, str]]:
-        """
-        Generate time chunks for processing.
+        Run the simplified pipeline.
 
         Parameters:
         -----------
-        zarr_path : str
-            Path to Zarr store
-        start_year : int
+        start_year : int, optional
             Start year for processing
-        end_year : int
+        end_year : int, optional
             End year for processing
+        indices_categories : list, optional
+            Categories of indices to calculate (default: all)
 
         Returns:
         --------
-        list
-            List of (start_date, end_date) tuples for each chunk
+        xr.Dataset
+            Dataset with calculated climate indices
         """
-        chunks = []
-        current_year = start_year
+        logger.info("="*60)
+        logger.info("PRISM CLIMATE PIPELINE - SIMPLIFIED")
+        logger.info("="*60)
 
-        while current_year <= end_year:
-            chunk_end = min(current_year + self.chunk_years - 1, end_year)
-            start_date = f"{current_year}-01-01"
-            end_date = f"{chunk_end}-12-31"
-            chunks.append((start_date, end_date))
-            current_year = chunk_end + 1
+        # Step 1: Load data (no preprocessing needed!)
+        logger.info("Step 1: Loading PRISM data...")
+        combined_ds = self.loader.get_combined_dataset()
 
-        return chunks
+        # Subset time if requested
+        if start_year or end_year:
+            combined_ds = self.loader.subset_time(combined_ds, start_year, end_year)
+            logger.info(f"  Subsetted to {start_year or 'start'}-{end_year or 'end'}")
 
-    def process_single_chunk(self,
-                           stores: Dict[str, str],
-                           time_range: Tuple[str, str],
-                           output_path: Path) -> Dict:
+        logger.info(f"  Loaded variables: {list(combined_ds.data_vars)}")
+        logger.info(f"  Time range: {combined_ds.time.min().values} to {combined_ds.time.max().values}")
+        logger.info(f"  Spatial extent: {combined_ds.sizes}")
+
+        # Step 2: Calculate indices
+        logger.info("\nStep 2: Calculating climate indices...")
+
+        # Determine which categories to calculate
+        if indices_categories is None:
+            indices_categories = ['temperature', 'precipitation', 'extremes',
+                                 'humidity', 'comfort', 'agricultural']
+
+        results = {}
+        for category in indices_categories:
+            if category in self.config.config['indices']:
+                logger.info(f"  Processing {category} indices...")
+                indices_list = self.config.config['indices'][category]
+
+                for index_name in indices_list:
+                    try:
+                        # Calculate each index
+                        result = self.calculator.calculate_index(
+                            combined_ds,
+                            index_name,
+                            category
+                        )
+                        if result is not None:
+                            results[index_name] = result
+                            logger.info(f"    ✓ {index_name}")
+                    except Exception as e:
+                        logger.warning(f"    ✗ {index_name}: {str(e)}")
+
+        # Combine all indices into single dataset
+        indices_ds = xr.Dataset(results)
+
+        # Add metadata
+        indices_ds.attrs.update({
+            'title': 'PRISM Climate Indices',
+            'institution': 'Calculated using xclim-timber pipeline',
+            'source': 'PRISM climate data',
+            'history': f"{datetime.now().isoformat()}: Calculated climate indices",
+            'time_range': f"{combined_ds.time.min().values} to {combined_ds.time.max().values}",
+            'indices_count': len(results)
+        })
+
+        # Step 3: Save results
+        logger.info(f"\nStep 3: Saving results...")
+        output_file = self._generate_output_filename(start_year, end_year)
+        self.save_results(indices_ds, output_file)
+
+        logger.info("="*60)
+        logger.info(f"✓ Pipeline complete! Results saved to {output_file}")
+        logger.info("="*60)
+
+        return indices_ds
+
+    def save_results(self, ds: xr.Dataset, output_path: Path):
         """
-        Process a single time chunk.
+        Save results to NetCDF file.
 
         Parameters:
         -----------
-        stores : dict
-            Zarr store paths
-        time_range : tuple
-            (start_date, end_date) for this chunk
+        ds : xr.Dataset
+            Dataset to save
         output_path : Path
-            Where to save results
-
-        Returns:
-        --------
-        dict
-            Metadata about processed chunk
+            Output file path
         """
-        start_date, end_date = time_range
-        logger.info(f"Processing chunk: {start_date} to {end_date}")
+        # Prepare encoding with compression
+        encoding = {
+            var: {
+                'zlib': True,
+                'complevel': self.config.config['output']['compression']['complevel']
+            }
+            for var in ds.data_vars
+        }
 
-        # Load only the required time slice - data stays lazy!
-        datasets = {}
-        for var, store_path in stores.items():
-            # Open with chunks - this is LAZY, no data loaded yet
-            ds = xr.open_zarr(store_path, chunks='auto')
-
-            # Select time range - still lazy!
-            if 'time' in ds.dims:
-                ds = ds.sel(time=slice(start_date, end_date))
-
-            datasets[var] = ds
-            logger.debug(f"Loaded {var} chunk: {ds.dims}")
-
-        # Calculate indices - computation happens here
-        calculator = ClimateIndicesCalculator()
-
-        # Load baseline percentiles if needed
-        baseline_calc = BaselinePercentileCalculator()
-        baseline_percentiles = baseline_calc.load_percentiles(
-            self.config.get('baseline.percentiles_path', 'data/baselines/baseline_percentiles.nc')
+        # Save to NetCDF
+        ds.to_netcdf(
+            output_path,
+            engine='netcdf4',
+            encoding=encoding
         )
+        logger.info(f"  Saved to {output_path}")
 
-        # Calculate all indices with the new modular system
-        indices = calculator.calculate_all(
-            datasets,
-            baseline_percentiles,
-            categories=self.config.get('indices.categories'),
-            freq=self.config.get('indices.frequency', 'YS')
-        )
+        # Calculate and log file size
+        file_size = output_path.stat().st_size / (1024 * 1024)  # MB
+        logger.info(f"  File size: {file_size:.2f} MB")
 
-        # Combine indices into single dataset
-        result_ds = xr.Dataset(indices)
-        result_ds.attrs['time_range'] = f"{start_date} to {end_date}"
+    def _generate_output_filename(self,
+                                 start_year: Optional[int] = None,
+                                 end_year: Optional[int] = None) -> Path:
+        """Generate output filename based on parameters."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Save chunk results immediately to free memory
-        chunk_file = output_path / f"indices_{start_date[:4]}_{end_date[:4]}.nc"
+        if start_year and end_year:
+            filename = f"prism_indices_{start_year}_{end_year}_{timestamp}.nc"
+        else:
+            filename = f"prism_indices_full_{timestamp}.nc"
 
-        # Use compute() to trigger calculation and save
-        with dask.config.set(scheduler='threads'):
-            result_ds.to_netcdf(chunk_file,
-                              engine='netcdf4',
-                              encoding={var: {'zlib': True, 'complevel': 4}
-                                      for var in result_ds.data_vars})
+        return self.config.output_path / filename
 
-        logger.info(f"Saved chunk to {chunk_file}")
-
-        # Return metadata only, not the actual data
-        return {'chunk': time_range, 'file': str(chunk_file),
-                'indices': list(result_ds.data_vars)}
-
-    def run_streaming(self,
-                     variables: List[str],
-                     start_year: int = 2001,
-                     end_year: int = 2024) -> Dict:
+    def run_for_parcels(self,
+                       parcels_file: str,
+                       start_year: int,
+                       end_year: int) -> Path:
         """
-        Run the pipeline in streaming mode.
+        Calculate indices for specific parcel locations.
 
         Parameters:
         -----------
-        variables : list
-            Variables to process
+        parcels_file : str
+            CSV file with parcel locations (must have lat, lon columns)
         start_year : int
             Start year
         end_year : int
@@ -298,160 +216,113 @@ class ClimateDataPipeline:
 
         Returns:
         --------
-        dict
-            Processing summary
+        Path
+            Path to output CSV file
         """
-        logger.info("=" * 80)
-        logger.info("STREAMING CLIMATE PIPELINE")
-        logger.info("=" * 80)
-        logger.info(f"Processing period: {start_year}-{end_year}")
-        logger.info(f"Chunk size: {self.chunk_years} year(s)")
-        logger.info(f"Variables: {variables}")
+        import pandas as pd
 
-        # Setup
-        self._setup_dask_client()
-        output_path = Path(self.config.get('data.output_path'))
-        output_path.mkdir(parents=True, exist_ok=True)
+        logger.info("Running pipeline for parcel locations...")
 
-        # Get Zarr stores
-        all_stores = self._get_zarr_stores()
-        stores = {k: v for k, v in all_stores.items() if k in variables}
+        # Load parcel data
+        parcels = pd.read_csv(parcels_file)
+        if 'lat' not in parcels.columns or 'lon' not in parcels.columns:
+            raise ValueError("Parcels file must have 'lat' and 'lon' columns")
 
-        if not stores:
-            logger.error("No valid Zarr stores found for requested variables")
+        # Calculate indices for full spatial extent
+        indices_ds = self.run(start_year, end_year)
 
-            # Provide detailed error information
-            error_details = []
-            if not all_stores:
-                error_details.append("No Zarr stores found at any configured location")
-            else:
-                available = list(all_stores.keys())
-                error_details.append(f"Available variables: {available}")
-                error_details.append(f"Requested variables: {variables}")
-                missing = [v for v in variables if v not in all_stores]
-                if missing:
-                    error_details.append(f"Missing variables: {missing}")
+        # Extract at parcel locations
+        logger.info(f"Extracting indices at {len(parcels)} locations...")
 
-            error_msg = "No stores found. " + ". ".join(error_details)
-            return {'status': 'failed', 'error': error_msg}
-
-        # Generate time chunks
-        sample_store = next(iter(stores.values()))
-        time_chunks = self._get_time_chunks(sample_store, start_year, end_year)
-
-        logger.info(f"Processing {len(time_chunks)} time chunks")
-
-        # Process chunks sequentially with memory cleanup
         results = []
+        for _, parcel in parcels.iterrows():
+            # Find nearest grid point
+            point_data = indices_ds.sel(
+                lat=parcel['lat'],
+                lon=parcel['lon'],
+                method='nearest'
+            )
 
-        for time_range in tqdm(time_chunks, desc="Processing chunks"):
-            try:
-                result = self.process_single_chunk(stores, time_range, output_path)
-                results.append(result)
+            # Convert to dictionary and add parcel info
+            point_dict = {
+                'lat': parcel['lat'],
+                'lon': parcel['lon']
+            }
 
-                # Force garbage collection between chunks
-                import gc
-                gc.collect()
+            # Add parcel metadata if available
+            for col in parcels.columns:
+                if col not in ['lat', 'lon']:
+                    point_dict[col] = parcel[col]
 
-            except Exception as e:
-                logger.error(f"Chunk {time_range} failed: {e}")
-                continue
+            # Add index values (averaged over time if multiple years)
+            for var in indices_ds.data_vars:
+                values = point_data[var].values
+                if values.size > 1:
+                    point_dict[var] = values.mean()
+                else:
+                    point_dict[var] = float(values)
 
-        # Combine chunk outputs into final dataset
-        if results:
-            self._combine_chunks(results, output_path)
+            results.append(point_dict)
 
-        logger.info("=" * 80)
-        logger.info("STREAMING PROCESSING COMPLETE")
-        logger.info("=" * 80)
+        # Convert to DataFrame and save
+        results_df = pd.DataFrame(results)
+        output_file = self.config.output_path / f"parcel_indices_{start_year}_{end_year}.csv"
+        results_df.to_csv(output_file, index=False)
 
-        return {
-            'status': 'success',
-            'chunks_processed': len(results),
-            'total_chunks': len(time_chunks),
-            'output_path': str(output_path),
-            'chunk_files': [r['file'] for r in results]
-        }
-
-    def _combine_chunks(self, chunks: List[Dict], output_path: Path):
-        """
-        Combine individual chunk files into single output.
-
-        Parameters:
-        -----------
-        chunks : list
-            List of chunk metadata
-        output_path : Path
-            Output directory
-        """
-        logger.info("Combining chunk outputs...")
-
-        # Get all chunk files
-        chunk_files = [c['file'] for c in chunks]
-
-        # Open all chunks lazily with proper resource management
-        datasets = []
-        try:
-            for file in sorted(chunk_files):
-                ds = xr.open_dataset(file, chunks='auto')
-                datasets.append(ds)
-
-            # Concatenate along time dimension
-            combined = xr.concat(datasets, dim='time')
-
-            # Save combined output
-            output_file = output_path / 'combined_indices.nc'
-
-            # Save with compression
-            encoding = {var: {'zlib': True, 'complevel': 4}
-                       for var in combined.data_vars}
-
-            combined.to_netcdf(output_file, engine='netcdf4', encoding=encoding)
-            logger.info(f"Saved combined output to {output_file}")
-
-        finally:
-            # Ensure all datasets are closed to free resources
-            for ds in datasets:
-                try:
-                    ds.close()
-                except:
-                    pass  # Ignore errors when closing
-
-    def close(self):
-        """Clean up resources."""
-        if self.client:
-            self.client.close()
+        logger.info(f"✓ Saved parcel results to {output_file}")
+        return output_file
 
 
-def main():
-    """Example usage of streaming pipeline."""
-    import sys
-
-    # Configuration
-    config_path = 'configs/config_comprehensive_2001_2024.yaml'
-
-    # Initialize pipeline with 1-year chunks
-    pipeline = StreamingClimatePipeline(config_path, chunk_years=1)
-
-    try:
-        # Run streaming processing
-        results = pipeline.run_streaming(
-            variables=['temperature', 'precipitation'],
-            start_year=2001,
-            end_year=2024
-        )
-
-        print("\nProcessing Results:")
-        print(f"Status: {results['status']}")
-        print(f"Chunks processed: {results['chunks_processed']}/{results['total_chunks']}")
-        print(f"Output: {results['output_path']}")
-
-    finally:
-        pipeline.close()
-
-    return 0
-
-
+# CLI interface
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Simplified PRISM Climate Data Pipeline"
+    )
+    parser.add_argument(
+        "--config",
+        help="Path to configuration file",
+        default=None
+    )
+    parser.add_argument(
+        "--start-year",
+        type=int,
+        help="Start year for processing",
+        default=None
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        help="End year for processing",
+        default=None
+    )
+    parser.add_argument(
+        "--parcels",
+        help="CSV file with parcel locations for point extraction",
+        default=None
+    )
+    parser.add_argument(
+        "--categories",
+        nargs="+",
+        help="Categories of indices to calculate",
+        default=None
+    )
+
+    args = parser.parse_args()
+
+    # Initialize pipeline
+    pipeline = PrismPipeline(args.config)
+
+    # Run appropriate mode
+    if args.parcels:
+        if not args.start_year or not args.end_year:
+            print("Error: --start-year and --end-year required for parcel extraction")
+            exit(1)
+        pipeline.run_for_parcels(args.parcels, args.start_year, args.end_year)
+    else:
+        pipeline.run(
+            start_year=args.start_year,
+            end_year=args.end_year,
+            indices_categories=args.categories
+        )

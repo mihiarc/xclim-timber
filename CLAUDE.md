@@ -1,93 +1,81 @@
-# xclim-timber: Climate Data Processing Pipeline
+# xclim-timber: Streamlined Climate Data Processing Pipeline
 
 ## Project Overview
 
-**xclim-timber** is a robust Python pipeline for processing large-scale climate raster data and calculating climate indices using the [xclim](https://xclim.readthedocs.io/) library. The project bridges raw climate data stored on external drives with actionable climate metrics for research, agricultural planning, and environmental impact assessment.
+**xclim-timber** is a streamlined Python pipeline for processing PRISM climate data and calculating 84 comprehensive climate indices using the [xclim](https://xclim.readthedocs.io/) library. The pipeline has been simplified by 75% to work directly with clean, pre-processed PRISM Zarr stores, eliminating unnecessary preprocessing and format conversion steps.
 
-## Project Architecture
+## Project Architecture (Simplified)
 
 ### Core Components
 
 ```
 xclim-timber/
 ├── src/                         # Core pipeline modules
-│   ├── pipeline.py              # Main orchestrator & CLI (src/pipeline.py:63)
-│   ├── config.py               # Configuration management
-│   ├── data_loader.py          # Multi-format data loading (src/data_loader.py:21)
-│   ├── preprocessor.py         # Data cleaning & standardization
-│   ├── indices_calculator.py   # Climate indices calculation (src/indices_calculator.py:21)
-│   └── config_noresm.py        # NorESM-specific configuration
+│   ├── pipeline.py              # Streamlined orchestrator & CLI
+│   ├── config.py               # Minimal configuration (103 lines, was 258)
+│   ├── data_loader.py          # Direct PRISM Zarr loading (153 lines, was 338)
+│   └── indices_calculator.py   # Climate indices calculation
 ├── efficient_extraction.py     # Vectorized point extraction
-├── fast_point_extraction.py    # Alternative extraction method
-├── point_extraction.py         # Legacy extraction script
 ├── csv_formatter.py            # CSV format converter (long ↔ wide)
-├── format_csv_example.py       # CSV formatting example/demo
-├── config_simple.yaml          # Configuration template
 └── requirements.txt            # Python dependencies
 ```
 
+**Major Simplification**: Removed `preprocessor.py` (433 lines) entirely - PRISM data is already clean and properly formatted.
+
 ### Pipeline Workflow
 
-The pipeline follows a **5-phase processing workflow**:
+The pipeline follows a **streamlined 3-phase workflow**:
 
 #### 1. Configuration Phase
-- **Location**: `src/config.py:1`
-- **Purpose**: YAML-based configuration management
+- **Location**: `src/config.py`
+- **Purpose**: Minimal configuration management
 - **Features**:
-  - Flexible file pattern matching for different climate variable naming conventions
-  - Dask worker configuration (memory limits, thread counts)
-  - Chunk size optimization for memory-efficient processing
-  - Input/output path specification for external drives
+  - Single PRISM Zarr store path: `/media/mihiarc/SSD4TB/data/PRISM/prism.zarr`
+  - Automatic handling of external drive mount point changes
+  - All 84 climate indices definitions preserved
+  - Simple YAML override for custom paths
 
 #### 2. Data Loading Phase
-- **Location**: `src/data_loader.py:39`
-- **Purpose**: Multi-format climate data ingestion
+- **Location**: `src/data_loader.py`
+- **Purpose**: Direct PRISM Zarr loading
 - **Capabilities**:
-  - Scans external drives using configurable file patterns
-  - Supports GeoTIFF (`*.tif`, `*.tiff`) and NetCDF (`*.nc`, `*.nc4`) formats
-  - Uses rioxarray for GeoTIFF and xarray for NetCDF loading
-  - Implements intelligent chunking for datasets larger than RAM
+  - Direct loading of three Zarr stores:
+    - Temperature: tmax, tmin, tmean (already in °C)
+    - Precipitation: ppt (already in mm)
+    - Humidity: tdmean, vpdmax, vpdmin
+  - Variable renaming for xclim compatibility (e.g., tmax → tasmax)
+  - Optional time and spatial subsetting
+  - **No preprocessing needed** - data is already clean!
 
-#### 3. Preprocessing Phase
-- **Location**: `src/preprocessor.py:1`
-- **Purpose**: Data standardization and quality control
-- **Operations**:
-  - Coordinate system standardization (handles 0-360° vs -180-180° longitude)
-  - Unit conversions (Kelvin to Celsius, etc.)
-  - Missing value handling and outlier detection
-  - Temporal resampling (daily, monthly, annual)
-  - CF compliance for metadata standards
-
-#### 4. Indices Calculation Phase
-- **Location**: `src/indices_calculator.py:37`
-- **Purpose**: Climate indices computation using xclim
-- **Supported Indices**:
-  - **Temperature**: annual_mean, frost_days, ice_days, summer_days, tropical_nights, growing_degree_days, heating/cooling_degree_days
-  - **Precipitation**: prcptot, rx1day, rx5day, sdii, cdd, cwd, r10mm, r20mm, r95p, r99p
-  - **Extremes**: tx90p, tn10p, warm/cold spell duration indices
-
-#### 5. Output Phase
-- **Location**: `src/pipeline.py:216`
-- **Purpose**: Results persistence with compression
-- **Formats**:
-  - NetCDF with CF-compliant metadata
-  - GeoTIFF for spatial analysis tools
-  - CSV for point-based extractions
+#### 3. Indices Calculation & Output Phase
+- **Location**: `src/indices_calculator.py` & `src/pipeline.py`
+- **Purpose**: Direct climate indices computation
+- **Features**:
+  - All 84 climate indices using xclim
+  - Direct calculation on clean data
+  - NetCDF output with compression (zlib level 4)
+  - CSV extraction for specific parcel locations
 
 ## Data Processing Capabilities
 
-### Input Data Support
-- **Formats**: GeoTIFF, NetCDF, NetCDF4
-- **Variables**: Temperature (tas, tasmax, tasmin), Precipitation (pr, precip)
-- **Coordinate Systems**: Geographic (lat/lon), projected coordinates
-- **Temporal Resolution**: Daily, sub-daily data
-- **Spatial Scales**: From local to global datasets
+### PRISM Data Specifications
+- **Format**: Zarr stores (optimized chunked arrays)
+- **Variables**:
+  - Temperature: tmax, tmin, tmean (units: °C)
+  - Precipitation: ppt (units: mm)
+  - Humidity: tdmean, vpdmax, vpdmin
+- **Coordinate System**: Geographic lat/lon (EPSG:4326)
+- **Temporal Coverage**: 1981-2024 (16,071 daily timesteps)
+- **Spatial Coverage**: Continental US
+  - Dimensions: 621 x 1405 grid points
+  - Resolution: ~4km
+  - Total size: ~168 GB per variable
 
-### Processing Optimizations
-- **Parallel Computing**: Dask distributed processing across multiple cores
-- **Memory Management**: Lazy evaluation with intelligent chunking
-- **Monitoring**: Web dashboard at `localhost:8787` during processing
-- **Scalability**: Handles datasets larger than available RAM
+### Streamlined Processing
+- **Direct Loading**: No format conversion or preprocessing
+- **Native Efficiency**: Zarr's built-in chunking and compression
+- **Reduced Overhead**: 75% less code to execute
+- **Simplified Pipeline**: 3 steps instead of 5
 
 ## Output Structure
 
