@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Simplified xclim-timber pipeline for efficient climate data processing.
-This version uses proper Zarr streaming to avoid memory issues.
+Humidity indices pipeline for xclim-timber.
+Efficiently processes humidity-based climate indices using Zarr streaming.
+Calculates 8 humidity indices including vapor pressure deficit, dewpoint, and moisture stress metrics.
 """
 
 import argparse
@@ -12,11 +13,13 @@ from typing import List, Optional
 import warnings
 import xarray as xr
 import xclim.indicators.atmos as atmos
+import xclim.indices as indices
 from dask.distributed import Client
 import dask
 import psutil
 import os
 from datetime import datetime
+import numpy as np
 
 # Suppress common warnings that don't affect functionality
 warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
@@ -35,10 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class StreamingClimatePipeline:
+class HumidityPipeline:
     """
-    Memory-efficient climate data pipeline using Zarr streaming.
-    Processes multiple climate indices without loading full dataset into memory.
+    Memory-efficient humidity indices pipeline using Zarr streaming.
+    Processes 8 humidity indices without loading full dataset into memory.
     """
 
     def __init__(self, chunk_years: int = 10, enable_dashboard: bool = False):
@@ -53,12 +56,8 @@ class StreamingClimatePipeline:
         self.enable_dashboard = enable_dashboard
         self.client = None
 
-        # Zarr store paths
-        self.zarr_stores = {
-            'temperature': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature',
-            'precipitation': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation',
-            'humidity': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/humidity'
-        }
+        # Zarr store path for humidity data
+        self.zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/humidity'
 
         # Optimal chunk configuration (aligned with dimensions)
         self.chunk_config = {
@@ -88,100 +87,79 @@ class StreamingClimatePipeline:
             self.client.close()
             self.client = None
 
-    def calculate_temperature_indices(self, ds: xr.Dataset) -> dict:
+    def calculate_humidity_indices(self, ds: xr.Dataset) -> dict:
         """
-        Calculate temperature-based climate indices.
+        Calculate humidity-based climate indices.
 
         Args:
-            ds: Dataset with temperature variables (tas, tasmax, tasmin)
+            ds: Dataset with humidity variables (tdew, vpdmax, vpdmin)
 
         Returns:
             Dictionary of calculated indices
         """
-        indices = {}
+        indices_dict = {}
 
-        # Basic temperature statistics
-        if 'tas' in ds:
-            logger.info("  - Calculating annual mean temperature...")
-            indices['tg_mean'] = atmos.tg_mean(ds.tas, freq='YS')
+        # Dewpoint temperature statistics
+        if 'tdew' in ds:
+            logger.info("  - Calculating annual mean dewpoint temperature...")
+            indices_dict['dewpoint_mean'] = ds.tdew.groupby('time.year').mean(dim='time')
 
-        if 'tasmax' in ds:
-            logger.info("  - Calculating annual maximum temperature...")
-            indices['tx_max'] = atmos.tx_max(ds.tasmax, freq='YS')
-            logger.info("  - Calculating summer days (>25°C)...")
-            indices['summer_days'] = atmos.tx_days_above(ds.tasmax, thresh='25 degC', freq='YS')
-            logger.info("  - Calculating hot days (>30°C)...")
-            indices['hot_days'] = atmos.tx_days_above(ds.tasmax, thresh='30 degC', freq='YS')
-            logger.info("  - Calculating ice days (<0°C)...")
-            indices['ice_days'] = atmos.ice_days(ds.tasmax, freq='YS')
+            logger.info("  - Calculating annual minimum dewpoint temperature...")
+            indices_dict['dewpoint_min'] = ds.tdew.groupby('time.year').min(dim='time')
 
-        if 'tasmin' in ds:
-            logger.info("  - Calculating annual minimum temperature...")
-            indices['tn_min'] = atmos.tn_min(ds.tasmin, freq='YS')
-            logger.info("  - Calculating frost days...")
-            indices['frost_days'] = atmos.frost_days(ds.tasmin, freq='YS')
-            logger.info("  - Calculating tropical nights (>20°C)...")
-            indices['tropical_nights'] = atmos.tropical_nights(ds.tasmin, freq='YS')
+            logger.info("  - Calculating annual maximum dewpoint temperature...")
+            indices_dict['dewpoint_max'] = ds.tdew.groupby('time.year').max(dim='time')
 
-        if 'tas' in ds:
-            logger.info("  - Calculating growing degree days...")
-            indices['growing_degree_days'] = atmos.growing_degree_days(
-                ds.tas, thresh='10 degC', freq='YS'
-            )
-            logger.info("  - Calculating heating degree days...")
-            indices['heating_degree_days'] = atmos.heating_degree_days(
-                ds.tas, thresh='17 degC', freq='YS'
-            )
-            logger.info("  - Calculating cooling degree days...")
-            indices['cooling_degree_days'] = atmos.cooling_degree_days(
-                ds.tas, thresh='18 degC', freq='YS'
-            )
+            # Days with high humidity (dewpoint > 18°C indicates uncomfortable humidity)
+            logger.info("  - Calculating humid days (dewpoint > 18°C)...")
+            humid_threshold = 18.0  # degrees C
+            humid_days = (ds.tdew > humid_threshold).groupby('time.year').sum(dim='time')
+            indices_dict['humid_days'] = humid_days
 
-        return indices
+        # Vapor pressure deficit statistics
+        if 'vpdmax' in ds:
+            logger.info("  - Calculating annual mean maximum VPD...")
+            indices_dict['vpdmax_mean'] = ds.vpdmax.groupby('time.year').mean(dim='time')
 
-    def calculate_precipitation_indices(self, ds: xr.Dataset) -> dict:
-        """
-        Calculate precipitation-based climate indices.
+            logger.info("  - Calculating extreme VPD days (>4 kPa)...")
+            # High VPD indicates water stress for plants
+            extreme_vpd_threshold = 4.0  # kPa
+            extreme_vpd_days = (ds.vpdmax > extreme_vpd_threshold).groupby('time.year').sum(dim='time')
+            indices_dict['extreme_vpd_days'] = extreme_vpd_days
 
-        Args:
-            ds: Dataset with precipitation variable (pr)
+        if 'vpdmin' in ds:
+            logger.info("  - Calculating annual mean minimum VPD...")
+            indices_dict['vpdmin_mean'] = ds.vpdmin.groupby('time.year').mean(dim='time')
 
-        Returns:
-            Dictionary of calculated indices
-        """
-        indices = {}
+            # Low VPD days (vpdmin < 0.5 kPa indicates high moisture/fog potential)
+            logger.info("  - Calculating low VPD days (<0.5 kPa)...")
+            low_vpd_threshold = 0.5  # kPa
+            low_vpd_days = (ds.vpdmin < low_vpd_threshold).groupby('time.year').sum(dim='time')
+            indices_dict['low_vpd_days'] = low_vpd_days
 
-        if 'pr' in ds:
-            logger.info("  - Calculating total precipitation...")
-            indices['prcptot'] = atmos.wet_precip_accumulation(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating max 1-day precipitation...")
-            indices['rx1day'] = atmos.max_1day_precipitation_amount(ds.pr, freq='YS')
-            logger.info("  - Calculating max 5-day precipitation...")
-            indices['rx5day'] = atmos.max_n_day_precipitation_amount(
-                ds.pr, window=5, freq='YS'
-            )
-            logger.info("  - Calculating consecutive dry days...")
-            indices['cdd'] = atmos.maximum_consecutive_dry_days(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating consecutive wet days...")
-            indices['cwd'] = atmos.maximum_consecutive_wet_days(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating daily precipitation intensity...")
-            indices['sdii'] = atmos.daily_pr_intensity(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
+        # Add proper metadata to all indices
+        for key, data_array in indices_dict.items():
+            if 'dewpoint' in key:
+                data_array.attrs['units'] = 'degC'
+                data_array.attrs['standard_name'] = 'dew_point_temperature'
+            elif 'vpd' in key:
+                if 'days' in key:
+                    data_array.attrs['units'] = 'days'
+                    data_array.attrs['standard_name'] = 'number_of_days'
+                else:
+                    data_array.attrs['units'] = 'kPa'
+                    data_array.attrs['standard_name'] = 'vapor_pressure_deficit'
+            elif 'humid_days' in key:
+                data_array.attrs['units'] = 'days'
+                data_array.attrs['standard_name'] = 'number_of_days_with_high_humidity'
 
-        return indices
+        return indices_dict
+
 
     def process_time_chunk(
         self,
         start_year: int,
         end_year: int,
-        variables: List[str],
         output_dir: Path
     ) -> Path:
         """
@@ -190,7 +168,6 @@ class StreamingClimatePipeline:
         Args:
             start_year: Start year for this chunk
             end_year: End year for this chunk
-            variables: List of variables to process
             output_dir: Output directory
 
         Returns:
@@ -203,50 +180,30 @@ class StreamingClimatePipeline:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         logger.info(f"Initial memory: {initial_memory:.1f} MB")
 
-        # Load data for requested variables
-        datasets = {}
-        for var_type in variables:
-            if var_type in self.zarr_stores:
-                logger.info(f"Loading {var_type} data...")
-                ds = xr.open_zarr(self.zarr_stores[var_type], chunks=self.chunk_config)
+        # Load humidity data
+        logger.info("Loading humidity data...")
+        ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
 
-                # Select time range
-                ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-                datasets[var_type] = ds
+        # Select time range
+        combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
 
-        if not datasets:
-            logger.error("No valid data loaded")
-            return None
-
-        # Combine all datasets
-        logger.info("Combining datasets...")
-        combined_ds = xr.merge(list(datasets.values()))
-
-        # Rename variables for xclim compatibility
+        # Rename humidity variables for consistency (if needed)
         rename_map = {
-            'tmean': 'tas',
-            'tmax': 'tasmax',
-            'tmin': 'tasmin',
-            'ppt': 'pr',
-            'tdmean': 'tdew',
-            'vpdmax': 'vpdmax',
-            'vpdmin': 'vpdmin'
+            'tdmean': 'tdew',  # PRISM uses 'tdmean' for dewpoint temperature
+            'vpdmax': 'vpdmax',  # Already correct
+            'vpdmin': 'vpdmin'   # Already correct
         }
 
         for old_name, new_name in rename_map.items():
-            if old_name in combined_ds:
+            if old_name in combined_ds and old_name != new_name:
                 combined_ds = combined_ds.rename({old_name: new_name})
                 logger.debug(f"Renamed {old_name} to {new_name}")
 
-        # Fix units for all variables
+        # Fix units for humidity variables
         unit_fixes = {
-            'tas': 'degC',
-            'tasmax': 'degC',
-            'tasmin': 'degC',
-            'pr': 'mm/day',
-            'tdew': 'degC',
-            'vpdmax': 'kPa',
-            'vpdmin': 'kPa'
+            'tdew': 'degC',     # Dewpoint temperature in Celsius
+            'vpdmax': 'kPa',    # Vapor pressure deficit in kilopascals
+            'vpdmin': 'kPa'     # Vapor pressure deficit in kilopascals
         }
 
         for var_name, unit in unit_fixes.items():
@@ -254,19 +211,10 @@ class StreamingClimatePipeline:
                 combined_ds[var_name].attrs['units'] = unit
                 combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
 
-        # Calculate indices based on available variables
-        logger.info("Calculating climate indices...")
-        all_indices = {}
-
-        if 'temperature' in variables:
-            temp_indices = self.calculate_temperature_indices(combined_ds)
-            all_indices.update(temp_indices)
-            logger.info(f"  Calculated {len(temp_indices)} temperature indices")
-
-        if 'precipitation' in variables:
-            precip_indices = self.calculate_precipitation_indices(combined_ds)
-            all_indices.update(precip_indices)
-            logger.info(f"  Calculated {len(precip_indices)} precipitation indices")
+        # Calculate humidity indices
+        logger.info("Calculating humidity indices...")
+        all_indices = self.calculate_humidity_indices(combined_ds)
+        logger.info(f"  Calculated {len(all_indices)} humidity indices")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -278,11 +226,12 @@ class StreamingClimatePipeline:
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber v2.0 (simplified)'
+        result_ds.attrs['software'] = 'xclim-timber humidity pipeline v1.0'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
+        result_ds.attrs['indices_count'] = len(all_indices)
 
         # Save output
-        output_file = output_dir / f'climate_indices_{start_year}_{end_year}.nc'
+        output_file = output_dir / f'humidity_indices_{start_year}_{end_year}.nc'
         logger.info(f"Saving to {output_file}...")
 
         with dask.config.set(scheduler='threads'):
@@ -313,10 +262,6 @@ class StreamingClimatePipeline:
     def _get_standard_name(self, var_name: str) -> str:
         """Get CF-compliant standard name for variable."""
         standard_names = {
-            'tas': 'air_temperature',
-            'tasmax': 'air_temperature',
-            'tasmin': 'air_temperature',
-            'pr': 'precipitation_flux',
             'tdew': 'dew_point_temperature',
             'vpdmax': 'vapor_pressure_deficit',
             'vpdmin': 'vapor_pressure_deficit'
@@ -325,16 +270,14 @@ class StreamingClimatePipeline:
 
     def run(
         self,
-        variables: List[str],
         start_year: int,
         end_year: int,
         output_dir: str = './outputs'
     ) -> List[Path]:
         """
-        Run the pipeline for specified years and variables.
+        Run the pipeline for specified years.
 
         Args:
-            variables: List of variables to process ('temperature', 'precipitation', 'humidity')
             start_year: Start year
             end_year: End year
             output_dir: Output directory path
@@ -346,10 +289,9 @@ class StreamingClimatePipeline:
         output_path.mkdir(parents=True, exist_ok=True)
 
         logger.info("=" * 60)
-        logger.info("XCLIM-TIMBER CLIMATE PIPELINE (v2.0)")
+        logger.info("HUMIDITY INDICES PIPELINE")
         logger.info("=" * 60)
         logger.info(f"Period: {start_year}-{end_year}")
-        logger.info(f"Variables: {variables}")
         logger.info(f"Output: {output_path}")
         logger.info(f"Chunk size: {self.chunk_years} years")
 
@@ -367,7 +309,6 @@ class StreamingClimatePipeline:
                 output_file = self.process_time_chunk(
                     current_year,
                     chunk_end,
-                    variables,
                     output_path
                 )
 
@@ -392,18 +333,18 @@ class StreamingClimatePipeline:
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="xclim-timber: Efficient Climate Data Processing Pipeline",
+        description="Humidity Indices Pipeline: Calculate 8 humidity-based climate indices",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process temperature indices for 2023
-  python run_pipeline.py --start-year 2023 --end-year 2023 --variables temperature
+  # Process humidity indices for 2023
+  python humidity_pipeline.py --start-year 2023 --end-year 2023
 
-  # Process all variables for 2001-2024
-  python run_pipeline.py --start-year 2001 --end-year 2024 --variables temperature precipitation
+  # Process full period 2001-2024
+  python humidity_pipeline.py --start-year 2001 --end-year 2024
 
   # Process with custom output directory
-  python run_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
+  python humidity_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
         """
     )
 
@@ -421,13 +362,6 @@ Examples:
         help='End year for processing (default: 2023)'
     )
 
-    parser.add_argument(
-        '--variables',
-        nargs='+',
-        choices=['temperature', 'precipitation', 'humidity'],
-        default=['temperature'],
-        help='Variables to process (default: temperature)'
-    )
 
     parser.add_argument(
         '--output-dir',
@@ -473,14 +407,13 @@ Examples:
         logger.info("Warnings enabled (use --show-warnings to suppress)")
 
     # Create and run pipeline
-    pipeline = StreamingClimatePipeline(
+    pipeline = HumidityPipeline(
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard
     )
 
     try:
         output_files = pipeline.run(
-            variables=args.variables,
             start_year=args.start_year,
             end_year=args.end_year,
             output_dir=args.output_dir

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Simplified xclim-timber pipeline for efficient climate data processing.
-This version uses proper Zarr streaming to avoid memory issues.
+Temperature indices pipeline for xclim-timber.
+Efficiently processes temperature-based climate indices using Zarr streaming.
+Calculates 12 temperature indices including degree days, extremes, and statistics.
 """
 
 import argparse
@@ -35,10 +36,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class StreamingClimatePipeline:
+class TemperaturePipeline:
     """
-    Memory-efficient climate data pipeline using Zarr streaming.
-    Processes multiple climate indices without loading full dataset into memory.
+    Memory-efficient temperature indices pipeline using Zarr streaming.
+    Processes 12 temperature indices without loading full dataset into memory.
     """
 
     def __init__(self, chunk_years: int = 10, enable_dashboard: bool = False):
@@ -53,12 +54,8 @@ class StreamingClimatePipeline:
         self.enable_dashboard = enable_dashboard
         self.client = None
 
-        # Zarr store paths
-        self.zarr_stores = {
-            'temperature': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature',
-            'precipitation': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation',
-            'humidity': '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/humidity'
-        }
+        # Zarr store path for temperature data
+        self.zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature'
 
         # Optimal chunk configuration (aligned with dimensions)
         self.chunk_config = {
@@ -122,6 +119,10 @@ class StreamingClimatePipeline:
             indices['frost_days'] = atmos.frost_days(ds.tasmin, freq='YS')
             logger.info("  - Calculating tropical nights (>20°C)...")
             indices['tropical_nights'] = atmos.tropical_nights(ds.tasmin, freq='YS')
+            logger.info("  - Calculating consecutive frost days...")
+            indices['consecutive_frost_days'] = atmos.consecutive_frost_days(
+                ds.tasmin, thresh='0 degC', freq='YS'
+            )
 
         if 'tas' in ds:
             logger.info("  - Calculating growing degree days...")
@@ -139,49 +140,11 @@ class StreamingClimatePipeline:
 
         return indices
 
-    def calculate_precipitation_indices(self, ds: xr.Dataset) -> dict:
-        """
-        Calculate precipitation-based climate indices.
-
-        Args:
-            ds: Dataset with precipitation variable (pr)
-
-        Returns:
-            Dictionary of calculated indices
-        """
-        indices = {}
-
-        if 'pr' in ds:
-            logger.info("  - Calculating total precipitation...")
-            indices['prcptot'] = atmos.wet_precip_accumulation(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating max 1-day precipitation...")
-            indices['rx1day'] = atmos.max_1day_precipitation_amount(ds.pr, freq='YS')
-            logger.info("  - Calculating max 5-day precipitation...")
-            indices['rx5day'] = atmos.max_n_day_precipitation_amount(
-                ds.pr, window=5, freq='YS'
-            )
-            logger.info("  - Calculating consecutive dry days...")
-            indices['cdd'] = atmos.maximum_consecutive_dry_days(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating consecutive wet days...")
-            indices['cwd'] = atmos.maximum_consecutive_wet_days(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-            logger.info("  - Calculating daily precipitation intensity...")
-            indices['sdii'] = atmos.daily_pr_intensity(
-                ds.pr, thresh='1 mm/day', freq='YS'
-            )
-
-        return indices
 
     def process_time_chunk(
         self,
         start_year: int,
         end_year: int,
-        variables: List[str],
         output_dir: Path
     ) -> Path:
         """
@@ -190,7 +153,6 @@ class StreamingClimatePipeline:
         Args:
             start_year: Start year for this chunk
             end_year: End year for this chunk
-            variables: List of variables to process
             output_dir: Output directory
 
         Returns:
@@ -203,34 +165,18 @@ class StreamingClimatePipeline:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         logger.info(f"Initial memory: {initial_memory:.1f} MB")
 
-        # Load data for requested variables
-        datasets = {}
-        for var_type in variables:
-            if var_type in self.zarr_stores:
-                logger.info(f"Loading {var_type} data...")
-                ds = xr.open_zarr(self.zarr_stores[var_type], chunks=self.chunk_config)
+        # Load temperature data
+        logger.info("Loading temperature data...")
+        ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
 
-                # Select time range
-                ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-                datasets[var_type] = ds
+        # Select time range
+        combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
 
-        if not datasets:
-            logger.error("No valid data loaded")
-            return None
-
-        # Combine all datasets
-        logger.info("Combining datasets...")
-        combined_ds = xr.merge(list(datasets.values()))
-
-        # Rename variables for xclim compatibility
+        # Rename temperature variables for xclim compatibility
         rename_map = {
             'tmean': 'tas',
             'tmax': 'tasmax',
-            'tmin': 'tasmin',
-            'ppt': 'pr',
-            'tdmean': 'tdew',
-            'vpdmax': 'vpdmax',
-            'vpdmin': 'vpdmin'
+            'tmin': 'tasmin'
         }
 
         for old_name, new_name in rename_map.items():
@@ -238,15 +184,11 @@ class StreamingClimatePipeline:
                 combined_ds = combined_ds.rename({old_name: new_name})
                 logger.debug(f"Renamed {old_name} to {new_name}")
 
-        # Fix units for all variables
+        # Fix units for temperature variables
         unit_fixes = {
             'tas': 'degC',
             'tasmax': 'degC',
-            'tasmin': 'degC',
-            'pr': 'mm/day',
-            'tdew': 'degC',
-            'vpdmax': 'kPa',
-            'vpdmin': 'kPa'
+            'tasmin': 'degC'
         }
 
         for var_name, unit in unit_fixes.items():
@@ -254,19 +196,10 @@ class StreamingClimatePipeline:
                 combined_ds[var_name].attrs['units'] = unit
                 combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
 
-        # Calculate indices based on available variables
-        logger.info("Calculating climate indices...")
-        all_indices = {}
-
-        if 'temperature' in variables:
-            temp_indices = self.calculate_temperature_indices(combined_ds)
-            all_indices.update(temp_indices)
-            logger.info(f"  Calculated {len(temp_indices)} temperature indices")
-
-        if 'precipitation' in variables:
-            precip_indices = self.calculate_precipitation_indices(combined_ds)
-            all_indices.update(precip_indices)
-            logger.info(f"  Calculated {len(precip_indices)} precipitation indices")
+        # Calculate temperature indices
+        logger.info("Calculating temperature indices...")
+        all_indices = self.calculate_temperature_indices(combined_ds)
+        logger.info(f"  Calculated {len(all_indices)} temperature indices")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -278,11 +211,12 @@ class StreamingClimatePipeline:
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber v2.0 (simplified)'
+        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v2.0'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
+        result_ds.attrs['indices_count'] = len(all_indices)
 
         # Save output
-        output_file = output_dir / f'climate_indices_{start_year}_{end_year}.nc'
+        output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
         logger.info(f"Saving to {output_file}...")
 
         with dask.config.set(scheduler='threads'):
@@ -325,16 +259,14 @@ class StreamingClimatePipeline:
 
     def run(
         self,
-        variables: List[str],
         start_year: int,
         end_year: int,
         output_dir: str = './outputs'
     ) -> List[Path]:
         """
-        Run the pipeline for specified years and variables.
+        Run the pipeline for specified years.
 
         Args:
-            variables: List of variables to process ('temperature', 'precipitation', 'humidity')
             start_year: Start year
             end_year: End year
             output_dir: Output directory path
@@ -346,10 +278,9 @@ class StreamingClimatePipeline:
         output_path.mkdir(parents=True, exist_ok=True)
 
         logger.info("=" * 60)
-        logger.info("XCLIM-TIMBER CLIMATE PIPELINE (v2.0)")
+        logger.info("TEMPERATURE INDICES PIPELINE")
         logger.info("=" * 60)
         logger.info(f"Period: {start_year}-{end_year}")
-        logger.info(f"Variables: {variables}")
         logger.info(f"Output: {output_path}")
         logger.info(f"Chunk size: {self.chunk_years} years")
 
@@ -367,7 +298,6 @@ class StreamingClimatePipeline:
                 output_file = self.process_time_chunk(
                     current_year,
                     chunk_end,
-                    variables,
                     output_path
                 )
 
@@ -392,18 +322,18 @@ class StreamingClimatePipeline:
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="xclim-timber: Efficient Climate Data Processing Pipeline",
+        description="Temperature Indices Pipeline: Calculate 12 temperature-based climate indices",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Process temperature indices for 2023
-  python run_pipeline.py --start-year 2023 --end-year 2023 --variables temperature
+  python temperature_pipeline.py --start-year 2023 --end-year 2023
 
-  # Process all variables for 2001-2024
-  python run_pipeline.py --start-year 2001 --end-year 2024 --variables temperature precipitation
+  # Process full period 2001-2024
+  python temperature_pipeline.py --start-year 2001 --end-year 2024
 
   # Process with custom output directory
-  python run_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
+  python temperature_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
         """
     )
 
@@ -421,13 +351,6 @@ Examples:
         help='End year for processing (default: 2023)'
     )
 
-    parser.add_argument(
-        '--variables',
-        nargs='+',
-        choices=['temperature', 'precipitation', 'humidity'],
-        default=['temperature'],
-        help='Variables to process (default: temperature)'
-    )
 
     parser.add_argument(
         '--output-dir',
@@ -473,14 +396,13 @@ Examples:
         logger.info("Warnings enabled (use --show-warnings to suppress)")
 
     # Create and run pipeline
-    pipeline = StreamingClimatePipeline(
+    pipeline = TemperaturePipeline(
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard
     )
 
     try:
         output_files = pipeline.run(
-            variables=args.variables,
             start_year=args.start_year,
             end_year=args.end_year,
             output_dir=args.output_dir
