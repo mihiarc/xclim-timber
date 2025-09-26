@@ -24,12 +24,34 @@ logger = logging.getLogger(__name__)
 
 def is_temperature_var(var_name: str) -> bool:
     """Check if a variable name indicates temperature data."""
-    temp_indicators = [
-        'temp', 'tas', 'tg', 'tx', 'tn', 't_',
-        'mean', 'max', 'min', 'degc', 'kelvin'
+    # Specific temperature variable prefixes/patterns
+    temp_prefixes = ['tas', 'tg_', 'tx_', 'tn_', 'temp']
+
+    # Temperature-specific indices
+    temp_indices = [
+        'frost_days', 'ice_days', 'summer_days', 'hot_days',
+        'tropical_nights', 'heating_degree_days', 'cooling_degree_days',
+        'growing_degree_days', 'consecutive_frost_days', 'warm_nights',
+        'very_hot_days', 'cold_spell', 'warm_spell'
     ]
+
     var_lower = var_name.lower()
-    return any(ind in var_lower for ind in temp_indicators)
+
+    # Check for temperature prefixes
+    for prefix in temp_prefixes:
+        if var_lower.startswith(prefix):
+            return True
+
+    # Check for specific temperature indices
+    for index in temp_indices:
+        if index in var_lower:
+            return True
+
+    # Dewpoint is temperature but in Celsius already, so exclude it
+    if 'dewpoint' in var_lower or 'vpd' in var_lower:
+        return False
+
+    return False
 
 
 def extract_points_from_netcdf_df(
