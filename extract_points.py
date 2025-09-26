@@ -49,21 +49,42 @@ def extract_points_from_netcdf_df(
         DataFrame with extracted values
     """
     logger.info(f"Loading parcels from {parcels_csv}")
-    parcels = pd.read_csv(parcels_csv)
+    try:
+        parcels = pd.read_csv(parcels_csv)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Parcels file not found: {parcels_csv}")
+    except Exception as e:
+        raise ValueError(f"Error reading parcels CSV: {e}")
+
     n_parcels = len(parcels)
     logger.info(f"Found {n_parcels} parcels to extract")
 
     logger.info(f"Opening NetCDF file: {nc_file}")
-    # Don't decode timedelta to avoid type issues
-    ds = xr.open_dataset(nc_file, decode_timedelta=False)
+    try:
+        # Don't decode timedelta to avoid type issues
+        ds = xr.open_dataset(nc_file, decode_timedelta=False)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"NetCDF file not found: {nc_file}")
+    except Exception as e:
+        raise ValueError(f"Error opening NetCDF file: {e}")
 
     # Get coordinate columns
     lat_col = 'parcel_level_latitude'
     lon_col = 'parcel_level_longitude'
 
+    # Validate required columns exist
+    if lat_col not in parcels.columns or lon_col not in parcels.columns:
+        raise ValueError(f"Required columns {lat_col} and {lon_col} not found in parcels CSV")
+
     # Extract coordinates
     lats = parcels[lat_col].values
     lons = parcels[lon_col].values
+
+    # Validate coordinate ranges
+    if len(lats) == 0:
+        raise ValueError("No parcel coordinates found")
+    if not (-90 <= lats.min() <= lats.max() <= 90):
+        raise ValueError(f"Invalid latitude values: {lats.min()}-{lats.max()}")
 
     # Get time dimension (usually years for annual indices)
     if 'time' in ds.dims:
@@ -185,10 +206,9 @@ def extract_points_from_netcdf(
 
     # Summary statistics
     logger.info("\n=== Extraction Summary ===")
-    logger.info(f"Parcels processed: {n_parcels}")
-    logger.info(f"Climate indices extracted: {len(ds.data_vars)}")
     logger.info(f"Output rows: {len(results)}")
-    logger.info(f"Years included: {sorted(results['year'].unique())}")
+    if 'year' in results.columns:
+        logger.info(f"Years included: {sorted(results['year'].unique())}")
 
     # Show sample statistics
     numeric_cols = results.select_dtypes(include=[np.number]).columns
