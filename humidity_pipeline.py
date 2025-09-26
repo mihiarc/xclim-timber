@@ -44,7 +44,7 @@ class HumidityPipeline:
     Processes 8 humidity indices without loading full dataset into memory.
     """
 
-    def __init__(self, chunk_years: int = 10, enable_dashboard: bool = False):
+    def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
         """
         Initialize the pipeline.
 
@@ -337,31 +337,30 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process humidity indices for 2023
+  # Process default period (2001-2024)
+  python humidity_pipeline.py
+
+  # Process single year
   python humidity_pipeline.py --start-year 2023 --end-year 2023
 
-  # Process full period 2001-2024
-  python humidity_pipeline.py --start-year 2001 --end-year 2024
-
   # Process with custom output directory
-  python humidity_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
+  python humidity_pipeline.py --output-dir ./results
         """
     )
 
     parser.add_argument(
         '--start-year',
         type=int,
-        default=2023,
-        help='Start year for processing (default: 2023)'
+        default=2001,
+        help='Start year for processing (default: 2001)'
     )
 
     parser.add_argument(
         '--end-year',
         type=int,
-        default=2023,
-        help='End year for processing (default: 2023)'
+        default=2024,
+        help='End year for processing (default: 2024)'
     )
-
 
     parser.add_argument(
         '--output-dir',
@@ -373,8 +372,8 @@ Examples:
     parser.add_argument(
         '--chunk-years',
         type=int,
-        default=10,
-        help='Number of years to process per chunk (default: 10)'
+        default=12,
+        help='Number of years to process per chunk (default: 12)'
     )
 
     parser.add_argument(
@@ -404,7 +403,7 @@ Examples:
     # Re-enable warnings if requested
     if args.show_warnings:
         warnings.resetwarnings()
-        logger.info("Warnings enabled (use --show-warnings to suppress)")
+        logger.info("Warnings enabled")
 
     # Create and run pipeline
     pipeline = HumidityPipeline(
