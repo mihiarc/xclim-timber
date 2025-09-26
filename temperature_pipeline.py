@@ -42,7 +42,7 @@ class TemperaturePipeline:
     Processes 12 temperature indices without loading full dataset into memory.
     """
 
-    def __init__(self, chunk_years: int = 10, enable_dashboard: bool = False):
+    def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
         """
         Initialize the pipeline.
 
@@ -121,7 +121,7 @@ class TemperaturePipeline:
             indices['tropical_nights'] = atmos.tropical_nights(ds.tasmin, freq='YS')
             logger.info("  - Calculating consecutive frost days...")
             indices['consecutive_frost_days'] = atmos.consecutive_frost_days(
-                ds.tasmin, thresh='0 degC', freq='YS'
+                ds.tasmin, freq='YS'
             )
 
         if 'tas' in ds:
@@ -245,17 +245,13 @@ class TemperaturePipeline:
         return output_file
 
     def _get_standard_name(self, var_name: str) -> str:
-        """Get CF-compliant standard name for variable."""
+        """Get CF-compliant standard name for temperature variable."""
         standard_names = {
             'tas': 'air_temperature',
             'tasmax': 'air_temperature',
-            'tasmin': 'air_temperature',
-            'pr': 'precipitation_flux',
-            'tdew': 'dew_point_temperature',
-            'vpdmax': 'vapor_pressure_deficit',
-            'vpdmin': 'vapor_pressure_deficit'
+            'tasmin': 'air_temperature'
         }
-        return standard_names.get(var_name, '')
+        return standard_names.get(var_name, 'air_temperature')
 
     def run(
         self,
@@ -326,31 +322,30 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process temperature indices for 2023
+  # Process default period (2001-2024)
+  python temperature_pipeline.py
+
+  # Process single year
   python temperature_pipeline.py --start-year 2023 --end-year 2023
 
-  # Process full period 2001-2024
-  python temperature_pipeline.py --start-year 2001 --end-year 2024
-
   # Process with custom output directory
-  python temperature_pipeline.py --start-year 2020 --end-year 2024 --output-dir ./results
+  python temperature_pipeline.py --output-dir ./results
         """
     )
 
     parser.add_argument(
         '--start-year',
         type=int,
-        default=2023,
-        help='Start year for processing (default: 2023)'
+        default=2001,
+        help='Start year for processing (default: 2001)'
     )
 
     parser.add_argument(
         '--end-year',
         type=int,
-        default=2023,
-        help='End year for processing (default: 2023)'
+        default=2024,
+        help='End year for processing (default: 2024)'
     )
-
 
     parser.add_argument(
         '--output-dir',
@@ -362,8 +357,8 @@ Examples:
     parser.add_argument(
         '--chunk-years',
         type=int,
-        default=10,
-        help='Number of years to process per chunk (default: 10)'
+        default=12,
+        help='Number of years to process per chunk (default: 12)'
     )
 
     parser.add_argument(
@@ -393,7 +388,7 @@ Examples:
     # Re-enable warnings if requested
     if args.show_warnings:
         warnings.resetwarnings()
-        logger.info("Warnings enabled (use --show-warnings to suppress)")
+        logger.info("Warnings enabled")
 
     # Create and run pipeline
     pipeline = TemperaturePipeline(
