@@ -64,3 +64,6 @@ outputs/*
 *.tmp
 temp/
 tmp/
+
+# Archived legacy code
+archive/
