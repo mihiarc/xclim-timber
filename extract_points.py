@@ -24,12 +24,34 @@ logger = logging.getLogger(__name__)
 
 def is_temperature_var(var_name: str) -> bool:
     """Check if a variable name indicates temperature data."""
-    temp_indicators = [
-        'temp', 'tas', 'tg', 'tx', 'tn', 't_',
-        'mean', 'max', 'min', 'degc', 'kelvin'
+    # Specific temperature variable prefixes/patterns
+    temp_prefixes = ['tas', 'tg_', 'tx_', 'tn_', 'temp']
+
+    # Temperature-specific indices
+    temp_indices = [
+        'frost_days', 'ice_days', 'summer_days', 'hot_days',
+        'tropical_nights', 'heating_degree_days', 'cooling_degree_days',
+        'growing_degree_days', 'consecutive_frost_days', 'warm_nights',
+        'very_hot_days', 'cold_spell', 'warm_spell'
     ]
+
     var_lower = var_name.lower()
-    return any(ind in var_lower for ind in temp_indicators)
+
+    # Check for temperature prefixes
+    for prefix in temp_prefixes:
+        if var_lower.startswith(prefix):
+            return True
+
+    # Check for specific temperature indices
+    for index in temp_indices:
+        if index in var_lower:
+            return True
+
+    # Dewpoint is temperature but in Celsius already, so exclude it
+    if 'dewpoint' in var_lower or 'vpd' in var_lower:
+        return False
+
+    return False
 
 
 def extract_points_from_netcdf_df(
@@ -86,12 +108,18 @@ def extract_points_from_netcdf_df(
     if not (-90 <= lats.min() <= lats.max() <= 90):
         raise ValueError(f"Invalid latitude values: {lats.min()}-{lats.max()}")
 
-    # Get time dimension (usually years for annual indices)
+    # Get time dimension (can be 'time' or 'year')
     if 'time' in ds.dims:
         years = pd.to_datetime(ds.time.values).year
+        time_dim = 'time'
         logger.info(f"Time range: {years.min()}-{years.max()}")
+    elif 'year' in ds.dims:
+        years = ds.year.values
+        time_dim = 'year'
+        logger.info(f"Year range: {years.min()}-{years.max()}")
     else:
         years = [None]  # Single time slice
+        time_dim = None
 
     # Extract each climate index
     logger.info(f"Extracting {len(ds.data_vars)} climate indices...")
@@ -117,10 +145,10 @@ def extract_points_from_netcdf_df(
         )
 
         # Handle temporal dimension
-        if 'time' in var_data.dims:
+        if time_dim and time_dim in var_data.dims:
             # Multiple time steps - extract each year
             for i, year in enumerate(years):
-                values = extracted.isel(time=i).values
+                values = extracted.isel({time_dim: i}).values
 
                 # Convert temperature from Kelvin to Celsius if needed
                 if convert_kelvin and is_temperature_var(var_name):
