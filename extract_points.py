@@ -108,12 +108,18 @@ def extract_points_from_netcdf_df(
     if not (-90 <= lats.min() <= lats.max() <= 90):
         raise ValueError(f"Invalid latitude values: {lats.min()}-{lats.max()}")
 
-    # Get time dimension (usually years for annual indices)
+    # Get time dimension (can be 'time' or 'year')
     if 'time' in ds.dims:
         years = pd.to_datetime(ds.time.values).year
+        time_dim = 'time'
         logger.info(f"Time range: {years.min()}-{years.max()}")
+    elif 'year' in ds.dims:
+        years = ds.year.values
+        time_dim = 'year'
+        logger.info(f"Year range: {years.min()}-{years.max()}")
     else:
         years = [None]  # Single time slice
+        time_dim = None
 
     # Extract each climate index
     logger.info(f"Extracting {len(ds.data_vars)} climate indices...")
@@ -139,10 +145,10 @@ def extract_points_from_netcdf_df(
         )
 
         # Handle temporal dimension
-        if 'time' in var_data.dims:
+        if time_dim and time_dim in var_data.dims:
             # Multiple time steps - extract each year
             for i, year in enumerate(years):
-                values = extracted.isel(time=i).values
+                values = extracted.isel({time_dim: i}).values
 
                 # Convert temperature from Kelvin to Celsius if needed
                 if convert_kelvin and is_temperature_var(var_name):
