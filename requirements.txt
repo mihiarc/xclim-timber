@@ -17,6 +17,7 @@ scipy>=1.10.0
 pyyaml>=6.0
 tqdm>=4.65.0
 click>=8.1.0
+psutil>=5.9.0  # For memory monitoring
 
 # Optional: for visualization
 matplotlib>=3.7.0

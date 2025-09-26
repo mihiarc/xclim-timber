@@ -18,7 +18,7 @@ import zarr
 from tqdm import tqdm
 
 from config import Config
-from indices_calculator import ClimateIndicesCalculator
+from indices import ClimateIndicesCalculator
 
 # Suppress common warnings for climate data processing
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
@@ -232,8 +232,14 @@ class StreamingClimatePipeline:
         # Load only the required time slice - data stays lazy!
         datasets = {}
         for var, store_path in stores.items():
-            # Open with chunks - this is LAZY, no data loaded yet
-            ds = xr.open_zarr(store_path, chunks='auto')
+            # Open with chunks - EXPLICIT chunking for memory efficiency
+            # Use smaller chunks to prevent memory overload
+            chunk_spec = {
+                'time': 365,  # Process one year at a time
+                'lat': 100,   # Spatial chunks
+                'lon': 100
+            }
+            ds = xr.open_zarr(store_path, chunks=chunk_spec)
 
             # Select time range - still lazy!
             if 'time' in ds.dims:
@@ -243,8 +249,66 @@ class StreamingClimatePipeline:
             logger.debug(f"Loaded {var} chunk: {ds.dims}")
 
         # Calculate indices - computation happens here
-        calculator = ClimateIndicesCalculator(self.config)
-        indices = calculator.calculate_all_indices(datasets)
+        calculator = ClimateIndicesCalculator()
+
+        # Combine all datasets into one for the calculator
+        combined_ds = xr.merge(list(datasets.values()))
+
+        # Map PRISM variable names to xclim expected names
+        variable_mapping = {
+            'tmax': 'tasmax',
+            'tmin': 'tasmin',
+            'tmean': 'tas',
+            'ppt': 'pr',
+            'tdmean': 'tdew',
+            'vpdmax': 'vpdmax',
+            'vpdmin': 'vpdmin'
+        }
+
+        # Rename variables to match xclim expectations
+        for old_name, new_name in variable_mapping.items():
+            if old_name in combined_ds:
+                combined_ds = combined_ds.rename({old_name: new_name})
+                logger.debug(f"Renamed {old_name} to {new_name}")
+
+        # Set proper CF-compliant units for all variables
+        unit_mapping = {
+            'tasmax': 'degC',  # Maximum temperature
+            'tasmin': 'degC',  # Minimum temperature
+            'tas': 'degC',     # Mean temperature
+            'pr': 'mm/day',    # Precipitation (daily total)
+            'tdew': 'degC',    # Dewpoint temperature
+            'vpdmax': 'kPa',   # Vapor pressure deficit max
+            'vpdmin': 'kPa'    # Vapor pressure deficit min
+        }
+
+        # Apply units to each variable
+        for var_name, unit in unit_mapping.items():
+            if var_name in combined_ds:
+                combined_ds[var_name].attrs['units'] = unit
+                logger.debug(f"Set units for {var_name}: {unit}")
+
+        # Set CF-compliant standard_name attributes for proper xclim processing
+        standard_names = {
+            'tasmax': 'air_temperature',  # Maximum temperature
+            'tasmin': 'air_temperature',  # Minimum temperature
+            'tas': 'air_temperature',     # Mean temperature
+            'pr': 'precipitation_flux',   # Precipitation rate (fixes the warning)
+            'tdew': 'dew_point_temperature',  # Dewpoint temperature
+            'vpdmax': 'vapor_pressure_deficit',  # Vapor pressure deficit max
+            'vpdmin': 'vapor_pressure_deficit'   # Vapor pressure deficit min
+        }
+
+        # Apply standard_name to each variable
+        for var_name, std_name in standard_names.items():
+            if var_name in combined_ds:
+                combined_ds[var_name].attrs['standard_name'] = std_name
+                logger.debug(f"Set standard_name for {var_name}: {std_name}")
+
+        logger.debug(f"Variables after renaming: {list(combined_ds.data_vars)}")
+
+        # Calculate indices with empty baseline (will be calculated if needed)
+        indices = calculator.calculate_all(combined_ds, baseline_percentiles={})
 
         # Combine indices into single dataset
         result_ds = xr.Dataset(indices)
