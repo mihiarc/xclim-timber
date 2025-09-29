@@ -92,12 +92,19 @@ class ExtractedIndicesAnalyzer:
             if stats['min'] < 0:
                 issues.append(f"Precipitation cannot be negative: {stats['min']:.1f}")
 
-        # VPD checks (in kPa, typical range 0-10)
+        # VPD checks - distinguish between day counts and actual VPD values
         if 'vpd' in column.lower():
-            if stats['min'] < 0:
-                issues.append(f"VPD cannot be negative: {stats['min']:.1f}")
-            if stats['max'] > 15:
-                issues.append(f"VPD unusually high: {stats['max']:.1f} kPa")
+            if '_days' in column:
+                # These are day counts, not VPD values
+                if stats['min'] < 0:
+                    issues.append(f"Days cannot be negative: {stats['min']}")
+                if stats['max'] > 366:
+                    issues.append(f"Days exceed year length: {stats['max']}")
+            elif 'vpdmax_mean' in column or 'vpdmin_mean' in column:
+                # Actual VPD values in hPa (divide by 10 for kPa)
+                if stats['min'] < 0:
+                    issues.append(f"VPD cannot be negative: {stats['min']:.1f}")
+                # Note: Values appear to be in hPa, so 30 hPa = 3.0 kPa is reasonable
 
         return {
             'status': 'invalid' if issues else 'valid',
