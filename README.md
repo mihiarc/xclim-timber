@@ -38,11 +38,11 @@ pip install -r requirements.txt
 
 ### One-Time Setup
 
-**Generate baseline percentiles for extreme indices** (required for temperature pipeline):
+**Generate baseline percentiles for extreme indices** (required for temperature and precipitation pipelines):
 ```bash
 python calculate_baseline_percentiles.py
 ```
-This is a one-time operation (~15 minutes) that calculates day-of-year percentiles from 1981-2000 baseline period. The results are cached in `data/baselines/` for all future runs.
+This is a one-time operation (15-25 minutes) that calculates day-of-year percentiles from 1981-2000 baseline period for both temperature and precipitation extremes. The results are cached as `data/baselines/baseline_percentiles_1981_2000.nc` (5.8GB) for all future runs.
 
 ### Running the Pipelines
 
@@ -51,7 +51,7 @@ This is a one-time operation (~15 minutes) that calculates day-of-year percentil
 python temperature_pipeline.py
 ```
 
-2. **Run precipitation pipeline** (6 indices):
+2. **Run precipitation pipeline** (10 indices):
 ```bash
 python precipitation_pipeline.py
 ```
@@ -149,7 +149,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **32 validated climate indices** (18 temperature + 6 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **36 validated climate indices** (18 temperature + 10 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -200,7 +200,7 @@ The pipeline processes these core climate variables:
 - `warm_spell_duration_index`: Warm spell duration (≥6 consecutive warm days)
 - `cold_spell_duration_index`: Cold spell duration (≥6 consecutive cold days)
 
-### Precipitation Indices (6 indices - Currently Implemented)
+### Precipitation Indices (10 indices - Currently Implemented)
 
 **Basic Statistics (4):**
 - `prcptot`: Total annual precipitation (wet days ≥ 1mm)
@@ -212,7 +212,13 @@ The pipeline processes these core climate variables:
 - `cdd`: Maximum consecutive dry days (< 1mm)
 - `cwd`: Maximum consecutive wet days (≥ 1mm)
 
-**Note:** Percentile-based precipitation indices (r95p, r99p) and threshold indices (r10mm, r20mm) planned for future implementation.
+**Extreme Percentile-Based Indices (2) - Uses 1981-2000 Baseline:**
+- `r95p`: Very wet days (precipitation > 95th percentile of wet days)
+- `r99p`: Extremely wet days (precipitation > 99th percentile of wet days)
+
+**Fixed Threshold Indices (2):**
+- `r10mm`: Heavy precipitation days (≥ 10mm)
+- `r20mm`: Very heavy precipitation days (≥ 20mm)
 
 ### Humidity Indices (8 indices - Currently Implemented)
 
@@ -228,20 +234,26 @@ The pipeline processes these core climate variables:
 - `vpdmin_mean`: Annual mean minimum VPD
 - `low_vpd_days`: Days with VPD < 0.5 kPa (high moisture/fog potential)
 
-### Human Comfort Indices (2 indices)
+---
+
+## Planned Future Indices (48 additional indices toward 84 goal)
+
+The following index categories are planned for future implementation:
+
+### Human Comfort Indices (2 indices - Planned)
 
 **Heat Stress Assessment:**
 - `heat_index`: Heat index combining temperature and humidity effects
 - `humidex`: Canadian humidex index for apparent temperature
 
-### Evapotranspiration Indices (3 indices)
+### Evapotranspiration Indices (3 indices - Planned)
 
 **Water Balance Calculations:**
 - `potential_evapotranspiration`: Potential evapotranspiration (Thornthwaite method)
 - `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET
 - `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
 
-### Multivariate Indices (4 indices)
+### Multivariate Indices (4 indices - Planned)
 
 **Combined Temperature-Precipitation:**
 - `cold_and_dry_days`: Days with low temperature and low precipitation
@@ -249,24 +261,14 @@ The pipeline processes these core climate variables:
 - `warm_and_dry_days`: Days with high temperature and low precipitation
 - `warm_and_wet_days`: Days with high temperature and high precipitation
 
-### Extreme Weather Indices (6 indices)
-
-**Temperature Extremes:**
-- `tx90p`: Warm days (days when daily maximum temperature > 90th percentile)
-- `tn90p`: Warm nights (days when daily minimum temperature > 90th percentile)
-- `tx10p`: Cool days (days when daily maximum temperature < 10th percentile)
-- `tn10p`: Cool nights (days when daily minimum temperature < 10th percentile)
-
-**Extreme Duration:**
-- `wsdi`: Warm spell duration index (consecutive warm days)
-- `csdi`: Cold spell duration index (consecutive cold days)
-
-### Agricultural Indices (3 indices)
+### Agricultural Indices (3 indices - Planned)
 
 **Specialized Agricultural Metrics:**
 - `gsl`: Growing season length (period suitable for plant growth)
 - `spi`: Standardized Precipitation Index (drought monitoring, 3-month window)
-- `spei`: Standardized Precipitation Evapotranspiration Index (requires additional data)
+- `spei`: Standardized Precipitation Evapotranspiration Index (requires additional variables)
+
+---
 
 ### Index Calculation Details
 

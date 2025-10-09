@@ -39,7 +39,12 @@ logger = logging.getLogger(__name__)
 class PrecipitationPipeline:
     """
     Memory-efficient precipitation indices pipeline using Zarr streaming.
-    Processes 6 precipitation indices without loading full dataset into memory.
+    Processes 10 precipitation indices without loading full dataset into memory.
+
+    Indices:
+    - Basic: prcptot, rx1day, rx5day, sdii, cdd, cwd (6 indices)
+    - Extreme (percentile-based): r95p, r99p (2 indices)
+    - Threshold: r10mm, r20mm (2 indices)
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -64,6 +69,10 @@ class PrecipitationPipeline:
             'lon': 281    # 1405 / 281 = 5 even chunks
         }
 
+        # Load baseline percentiles for extreme indices
+        self.baseline_file = Path('data/baselines/baseline_percentiles_1981_2000.nc')
+        self.baseline_percentiles = self._load_baseline_percentiles()
+
     def setup_dask_client(self):
         """Initialize Dask client with memory limits."""
         if self.client is None:
@@ -84,6 +93,74 @@ class PrecipitationPipeline:
         if self.client:
             self.client.close()
             self.client = None
+
+    def _load_baseline_percentiles(self):
+        """
+        Load pre-calculated baseline percentiles for extreme indices.
+
+        Returns:
+            Dict of baseline percentile DataArrays
+
+        Raises:
+            FileNotFoundError: If baseline file doesn't exist
+            RuntimeError: If baseline file is corrupted or invalid
+        """
+        if not self.baseline_file.exists():
+            error_msg = f"""
+ERROR: Baseline percentiles file not found at {self.baseline_file}
+
+Please generate baseline percentiles first:
+  python calculate_baseline_percentiles.py
+
+This is a one-time operation that takes ~15-25 minutes.
+The file should contain both temperature and precipitation percentiles.
+"""
+            raise FileNotFoundError(error_msg)
+
+        try:
+            logger.info(f"Loading baseline percentiles from {self.baseline_file}")
+            ds = xr.open_dataset(self.baseline_file)
+
+            # Validate baseline period
+            baseline_period = ds.attrs.get('baseline_period')
+            if baseline_period != '1981-2000':
+                logger.warning(
+                    f"Baseline period mismatch: expected '1981-2000', got '{baseline_period}'. "
+                    f"Results may not be comparable to standard climate indices."
+                )
+
+            # Extract and validate precipitation percentiles
+            percentiles = {}
+            required_vars = ['pr95p_threshold', 'pr99p_threshold']
+
+            for var in required_vars:
+                if var not in ds:
+                    logger.warning(f"Missing expected variable: {var}")
+                    continue
+
+                data = ds[var]
+
+                # Validate dimensions
+                if 'dayofyear' not in data.dims:
+                    raise ValueError(f"{var} missing required 'dayofyear' dimension")
+
+                # Validate data integrity
+                if data.isnull().all():
+                    raise ValueError(f"{var} contains all NaN values - baseline may be corrupted")
+
+                percentiles[var] = data
+                logger.debug(f"  Loaded {var}: shape={data.shape}")
+
+            if not percentiles:
+                logger.warning("No precipitation percentiles found in baseline file")
+                logger.warning("Extreme indices (r95p, r99p) will not be calculated")
+
+            return percentiles
+
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to read baseline file: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Error loading baseline percentiles: {e}")
 
     def calculate_precipitation_indices(self, ds: xr.Dataset) -> dict:
         """
@@ -120,6 +197,84 @@ class PrecipitationPipeline:
             indices['sdii'] = atmos.daily_pr_intensity(
                 ds.pr, thresh='1 mm/day', freq='YS'
             )
+
+        return indices
+
+    def calculate_extreme_indices(self, ds: xr.Dataset) -> dict:
+        """
+        Calculate percentile-based extreme precipitation indices.
+
+        Uses pre-calculated baseline percentiles (1981-2000) on wet days.
+
+        Args:
+            ds: Dataset with precipitation variable (pr)
+
+        Returns:
+            Dictionary of calculated extreme indices
+        """
+        indices = {}
+
+        if 'pr' not in ds:
+            logger.warning("No precipitation variable found for extreme indices")
+            return indices
+
+        if not self.baseline_percentiles:
+            logger.warning("No baseline percentiles loaded, skipping extreme indices")
+            return indices
+
+        # r95p: Very wet days (days above 95th percentile of wet days)
+        if 'pr95p_threshold' in self.baseline_percentiles:
+            logger.info("  - Calculating r95p (very wet days)...")
+            indices['r95p'] = atmos.days_over_precip_doy_thresh(
+                pr=ds.pr,
+                pr_per=self.baseline_percentiles['pr95p_threshold'],
+                thresh='1 mm/day',
+                freq='YS'
+            )
+
+        # r99p: Extremely wet days (days above 99th percentile of wet days)
+        if 'pr99p_threshold' in self.baseline_percentiles:
+            logger.info("  - Calculating r99p (extremely wet days)...")
+            indices['r99p'] = atmos.days_over_precip_doy_thresh(
+                pr=ds.pr,
+                pr_per=self.baseline_percentiles['pr99p_threshold'],
+                thresh='1 mm/day',
+                freq='YS'
+            )
+
+        return indices
+
+    def calculate_threshold_indices(self, ds: xr.Dataset) -> dict:
+        """
+        Calculate fixed-threshold precipitation indices.
+
+        Args:
+            ds: Dataset with precipitation variable (pr)
+
+        Returns:
+            Dictionary of calculated threshold indices
+        """
+        indices = {}
+
+        if 'pr' not in ds:
+            logger.warning("No precipitation variable found for threshold indices")
+            return indices
+
+        # r10mm: Heavy precipitation days (>= 10mm)
+        logger.info("  - Calculating r10mm (heavy precipitation days)...")
+        indices['r10mm'] = atmos.wetdays(
+            pr=ds.pr,
+            thresh='10 mm/day',
+            freq='YS'
+        )
+
+        # r20mm: Very heavy precipitation days (>= 20mm)
+        logger.info("  - Calculating r20mm (very heavy precipitation days)...")
+        indices['r20mm'] = atmos.wetdays(
+            pr=ds.pr,
+            thresh='20 mm/day',
+            freq='YS'
+        )
 
         return indices
 
@@ -177,8 +332,20 @@ class PrecipitationPipeline:
 
         # Calculate precipitation indices
         logger.info("Calculating precipitation indices...")
-        all_indices = self.calculate_precipitation_indices(combined_ds)
-        logger.info(f"  Calculated {len(all_indices)} precipitation indices")
+
+        # Calculate basic indices
+        basic_indices = self.calculate_precipitation_indices(combined_ds)
+
+        # Calculate extreme indices (percentile-based)
+        extreme_indices = self.calculate_extreme_indices(combined_ds)
+
+        # Calculate threshold indices
+        threshold_indices = self.calculate_threshold_indices(combined_ds)
+
+        # Merge all indices
+        all_indices = {**basic_indices, **extreme_indices, **threshold_indices}
+        logger.info(f"  Calculated {len(all_indices)} precipitation indices total")
+        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Threshold: {len(threshold_indices)}")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -190,9 +357,11 @@ class PrecipitationPipeline:
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber precipitation pipeline v2.0'
+        result_ds.attrs['software'] = 'xclim-timber precipitation pipeline v3.0'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         result_ds.attrs['indices_count'] = len(all_indices)
+        result_ds.attrs['baseline_period'] = '1981-2000'
+        result_ds.attrs['note'] = 'Extreme indices (r95p, r99p) use wet-day percentiles from baseline period'
 
         # Save output
         output_file = output_dir / f'precipitation_indices_{start_year}_{end_year}.nc'
@@ -295,9 +464,14 @@ class PrecipitationPipeline:
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Precipitation Indices Pipeline: Calculate 6 precipitation-based climate indices",
+        description="Precipitation Indices Pipeline: Calculate 10 precipitation-based climate indices",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Indices calculated:
+  Basic (6): prcptot, rx1day, rx5day, sdii, cdd, cwd
+  Extreme (2): r95p, r99p (percentile-based using 1981-2000 baseline)
+  Threshold (2): r10mm, r20mm (fixed thresholds)
+
 Examples:
   # Process default period (1981-2024)
   python precipitation_pipeline.py
@@ -307,6 +481,9 @@ Examples:
 
   # Process with custom output directory
   python precipitation_pipeline.py --output-dir ./results
+
+Note: Requires baseline percentiles file. Run first if missing:
+  python calculate_baseline_percentiles.py
         """
     )
 

@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 """
-Pre-calculate baseline percentiles for extreme temperature indices.
+Pre-calculate baseline percentiles for extreme temperature and precipitation indices.
 
 This module calculates day-of-year percentiles using the full baseline period
 (1981-2000) and saves them for use in chunked processing. This solves the
 problem of calculating percentile indices when processing data in small chunks.
+
+Key differences:
+- Temperature: percentiles calculated on ALL days
+- Precipitation: percentiles calculated on WET DAYS ONLY (pr ≥ 1mm) per WMO standards
 """
 
 import logging
@@ -43,15 +47,18 @@ class BaselinePercentileCalculator:
         self.percentiles = {}
 
     def calculate_baseline_percentiles(self,
-                                      data_path: str,
+                                      temp_data_path: str,
+                                      precip_data_path: Optional[str] = None,
                                       save_path: Optional[str] = None) -> Dict[str, xr.DataArray]:
         """
         Calculate all required baseline percentiles for extreme indices.
 
         Parameters:
         -----------
-        data_path : str
+        temp_data_path : str
             Path to temperature data (Zarr store or NetCDF)
+        precip_data_path : str, optional
+            Path to precipitation data (Zarr store or NetCDF)
         save_path : str, optional
             Path to save calculated percentiles
 
@@ -63,19 +70,29 @@ class BaselinePercentileCalculator:
         logger.info(f"Calculating baseline percentiles for {self.baseline_start}-{self.baseline_end}")
 
         # Load temperature data for baseline period
-        logger.info(f"Loading data from {data_path}")
+        logger.info(f"Loading temperature data from {temp_data_path}")
 
-        if Path(data_path).suffix == '.zarr' or Path(data_path).is_dir():
-            ds = xr.open_zarr(data_path, consolidated=False)
+        if Path(temp_data_path).suffix == '.zarr' or Path(temp_data_path).is_dir():
+            ds_temp = xr.open_zarr(temp_data_path, consolidated=False)
         else:
-            ds = xr.open_dataset(data_path)
+            ds_temp = xr.open_dataset(temp_data_path)
 
         # Select baseline period
         baseline_slice = slice(f"{self.baseline_start}-01-01", f"{self.baseline_end}-12-31")
-        ds_baseline = ds.sel(time=baseline_slice)
+        ds_temp_baseline = ds_temp.sel(time=baseline_slice)
+
+        # Load precipitation data if provided
+        ds_precip_baseline = None
+        if precip_data_path:
+            logger.info(f"Loading precipitation data from {precip_data_path}")
+            if Path(precip_data_path).suffix == '.zarr' or Path(precip_data_path).is_dir():
+                ds_precip = xr.open_zarr(precip_data_path, consolidated=False)
+            else:
+                ds_precip = xr.open_dataset(precip_data_path)
+            ds_precip_baseline = ds_precip.sel(time=baseline_slice)
 
         # Check we have enough years
-        n_years = len(ds_baseline.groupby('time.year'))
+        n_years = len(ds_temp_baseline.groupby('time.year'))
         if n_years < 10:
             raise ValueError(
                 f"Only {n_years} years in baseline period {self.baseline_start}-{self.baseline_end}. "
@@ -83,29 +100,56 @@ class BaselinePercentileCalculator:
             )
         logger.info(f"Using {n_years} years of baseline data")
 
-        # Standardize units
+        # Standardize units for temperature
         for var in ['tmax', 'tasmax', 'tmin', 'tasmin']:
-            if var in ds_baseline:
-                data = ds_baseline[var]
+            if var in ds_temp_baseline:
+                data = ds_temp_baseline[var]
                 if 'units' in data.attrs:
                     if data.attrs['units'] in ['degrees_celsius', 'celsius', 'C']:
                         data.attrs['units'] = 'degC'
 
+        # Standardize units for precipitation
+        if ds_precip_baseline is not None:
+            for var in ['pr', 'ppt', 'precip']:
+                if var in ds_precip_baseline:
+                    data = ds_precip_baseline[var]
+                    if 'units' in data.attrs:
+                        # Daily precipitation should be mm/day for xclim compatibility
+                        if data.attrs['units'] in ['millimeter', 'millimeters', 'mm']:
+                            data.attrs['units'] = 'mm/day'
+
         # Calculate percentiles for each variable
         # Note: We calculate each percentile separately to avoid extra dimensions
         percentile_configs = [
-            ('tx90p_threshold', 'tmax', 90, "90th percentile of daily maximum temperature"),
-            ('tx10p_threshold', 'tmax', 10, "10th percentile of daily maximum temperature"),
-            ('tn90p_threshold', 'tmin', 90, "90th percentile of daily minimum temperature"),
-            ('tn10p_threshold', 'tmin', 10, "10th percentile of daily minimum temperature"),
+            # Temperature percentiles (calculated on ALL days)
+            ('tx90p_threshold', 'tmax', 90, "90th percentile of daily maximum temperature", 'temperature', None),
+            ('tx10p_threshold', 'tmax', 10, "10th percentile of daily maximum temperature", 'temperature', None),
+            ('tn90p_threshold', 'tmin', 90, "90th percentile of daily minimum temperature", 'temperature', None),
+            ('tn10p_threshold', 'tmin', 10, "10th percentile of daily minimum temperature", 'temperature', None),
+            # Precipitation percentiles (calculated on WET DAYS ONLY: pr ≥ 1mm)
+            ('pr95p_threshold', 'pr', 95, "95th percentile of wet day precipitation", 'precipitation', 1.0),
+            ('pr99p_threshold', 'pr', 99, "99th percentile of wet day precipitation", 'precipitation', 1.0),
         ]
 
         results = {}
 
-        for name, var_name, percentile, description in percentile_configs:
+        for name, var_name, percentile, description, data_type, wet_day_threshold in percentile_configs:
+            # Select the appropriate dataset
+            if data_type == 'temperature':
+                ds_baseline = ds_temp_baseline
+                alt_names = {'tmax': 'tasmax', 'tmin': 'tasmin'}
+            elif data_type == 'precipitation':
+                if ds_precip_baseline is None:
+                    logger.warning(f"Skipping {name}: precipitation data not provided")
+                    continue
+                ds_baseline = ds_precip_baseline
+                alt_names = {'pr': 'ppt', 'ppt': 'pr'}
+            else:
+                logger.warning(f"Unknown data type '{data_type}' for {name}")
+                continue
+
             # Check if variable exists (also try alternate names)
             if var_name not in ds_baseline:
-                alt_names = {'tmax': 'tasmax', 'tmin': 'tasmin'}
                 if var_name in alt_names and alt_names[var_name] in ds_baseline:
                     var_name = alt_names[var_name]
                 else:
@@ -114,6 +158,16 @@ class BaselinePercentileCalculator:
 
             data = ds_baseline[var_name]
             logger.info(f"Calculating {name}: {description}")
+
+            # Apply wet-day filtering for precipitation (WMO standard)
+            if wet_day_threshold is not None:
+                logger.info(f"  Filtering to wet days (>= {wet_day_threshold} mm)")
+                # Replace dry days with NaN so they're excluded from percentile calculation
+                data = data.where(data >= wet_day_threshold)
+                # Count wet days for logging
+                wet_days = (data >= wet_day_threshold).sum().values
+                total_days = data.sizes['time']
+                logger.info(f"  Wet days: {wet_days:,} / {total_days:,} ({100*wet_days/total_days:.1f}%)")
 
             # Optimize chunking for percentile calculation
             # Load time dimension fully but chunk spatially
@@ -145,6 +199,8 @@ class BaselinePercentileCalculator:
             doy_percentile.attrs['description'] = description
             doy_percentile.attrs['baseline_period'] = f"{self.baseline_start}-{self.baseline_end}"
             doy_percentile.attrs['baseline_years'] = n_years
+            if wet_day_threshold is not None:
+                doy_percentile.attrs['wet_day_threshold'] = f"{wet_day_threshold} mm"
 
             results[name] = doy_percentile
 
@@ -162,7 +218,8 @@ class BaselinePercentileCalculator:
             # Combine into a dataset
             ds_percentiles = xr.Dataset(results)
             ds_percentiles.attrs['baseline_period'] = f"{self.baseline_start}-{self.baseline_end}"
-            ds_percentiles.attrs['description'] = "Pre-calculated baseline percentiles for extreme temperature indices"
+            ds_percentiles.attrs['description'] = "Pre-calculated baseline percentiles for extreme temperature and precipitation indices"
+            ds_percentiles.attrs['note'] = "Precipitation percentiles calculated on wet days only (pr >= 1mm) per WMO standards"
 
             # Save as NetCDF
             ds_percentiles.to_netcdf(save_path, engine='netcdf4', encoding={
@@ -201,7 +258,7 @@ class BaselinePercentileCalculator:
 
 
 def main():
-    """Calculate baseline percentiles for PRISM data."""
+    """Calculate baseline percentiles for PRISM data (temperature and precipitation)."""
     import sys
     import time
 
@@ -213,6 +270,7 @@ def main():
 
     # Paths
     temp_data_path = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature'
+    precip_data_path = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation'
     output_dir = Path('data/baselines')
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / 'baseline_percentiles_1981_2000.nc'
@@ -220,6 +278,10 @@ def main():
     # Check if data exists
     if not Path(temp_data_path).exists():
         logger.error(f"Temperature data not found at {temp_data_path}")
+        return 1
+
+    if not Path(precip_data_path).exists():
+        logger.error(f"Precipitation data not found at {precip_data_path}")
         return 1
 
     # Calculate percentiles
@@ -233,7 +295,10 @@ def main():
     print("="*70)
     print(f"\nThis will calculate day-of-year percentiles using the")
     print(f"baseline period 1981-2000 (20 years of data).")
-    print(f"\n⚠️  This is a one-time calculation that may take 10-20 minutes.")
+    print(f"\nCalculating percentiles for:")
+    print(f"  • Temperature: 4 percentiles (tx90p, tx10p, tn90p, tn10p)")
+    print(f"  • Precipitation: 2 percentiles (pr95p, pr99p on wet days only)")
+    print(f"\n⚠️  This is a one-time calculation that may take 15-25 minutes.")
     print(f"   The results will be saved and reused for all future processing.")
     print("\n" + "-"*70)
 
@@ -241,7 +306,8 @@ def main():
         start_time = time.time()
 
         percentiles = calculator.calculate_baseline_percentiles(
-            data_path=temp_data_path,
+            temp_data_path=temp_data_path,
+            precip_data_path=precip_data_path,
             save_path=output_path
         )
 
@@ -255,6 +321,8 @@ def main():
         print("\nCalculated percentiles:")
         for name in percentiles:
             print(f"  - {name}")
+        print("\n📝 Note: Precipitation percentiles calculated on wet days only")
+        print("   (pr >= 1mm) following WMO standards.")
         print("\nThese percentiles can now be used for chunked processing")
         print("without recalculation.")
         print("="*70 + "\n")
