@@ -95,6 +95,10 @@ class HumanComfortPipeline:
 
         Returns:
             Dictionary of calculated indices
+
+        Note:
+            Heat stress indices use annual MAXIMUM (not mean) to capture
+            worst-case conditions following WMO standards for heat stress assessment.
         """
         indices = {}
 
@@ -111,30 +115,75 @@ class HumanComfortPipeline:
             # Add to dataset for use in other indices
             ds['hurs'] = rh
 
-            # Calculate annual mean for output
-            indices['relative_humidity'] = rh.resample(time='YS').mean()
+            # Calculate annual maximum for output (extreme conditions)
+            # Note: Using max instead of mean for heat stress assessment
+            indices['relative_humidity'] = rh.resample(time='YS').max()
 
         # Heat index (requires temperature and relative humidity)
         if 'tas' in ds and 'hurs' in ds:
             logger.info("  - Calculating heat index...")
-            # heat_index returns instantaneous values, resample to annual mean
+            # heat_index returns instantaneous values
+            # Resample to annual MAXIMUM (worst-case heat stress per year)
+            # This follows WMO standards for heat stress indices
             heat_idx = atmos.heat_index(
                 tas=ds.tas,
                 hurs=ds.hurs
             )
-            indices['heat_index'] = heat_idx.resample(time='YS').mean()
+            indices['heat_index'] = heat_idx.resample(time='YS').max()
 
         # Humidex (Canadian index, requires temperature and dewpoint)
         if 'tas' in ds and 'tdew' in ds:
             logger.info("  - Calculating humidex...")
-            # humidex returns instantaneous values, resample to annual mean
+            # humidex returns instantaneous values
+            # Resample to annual MAXIMUM (worst-case heat stress per year)
+            # This follows Canadian heat stress standards
             hmidx = atmos.humidex(
                 tas=ds.tas,
                 tdps=ds.tdew
             )
-            indices['humidex'] = hmidx.resample(time='YS').mean()
+            indices['humidex'] = hmidx.resample(time='YS').max()
 
         return indices
+
+    def _validate_coordinates(self, ds1: xr.Dataset, ds2: xr.Dataset, coord_names: list):
+        """
+        Validate that two datasets have matching coordinates.
+
+        Args:
+            ds1: First dataset
+            ds2: Second dataset
+            coord_names: List of coordinate names to validate
+
+        Raises:
+            ValueError: If coordinates don't match
+        """
+        import numpy as np
+
+        for coord in coord_names:
+            if coord not in ds1.coords:
+                raise ValueError(f"Coordinate '{coord}' missing in temperature dataset")
+            if coord not in ds2.coords:
+                raise ValueError(f"Coordinate '{coord}' missing in humidity dataset")
+
+            # Check shape
+            if ds1[coord].shape != ds2[coord].shape:
+                raise ValueError(
+                    f"Coordinate '{coord}' shape mismatch: "
+                    f"temperature {ds1[coord].shape} vs humidity {ds2[coord].shape}"
+                )
+
+            # Check values match (with floating point tolerance for spatial coords)
+            if coord in ['lat', 'lon']:
+                if not np.allclose(ds1[coord].values, ds2[coord].values, rtol=1e-6):
+                    max_diff = float(np.max(np.abs(ds1[coord].values - ds2[coord].values)))
+                    raise ValueError(
+                        f"Coordinate '{coord}' values mismatch. Max difference: {max_diff}"
+                    )
+            else:  # time coordinate - must match exactly
+                if not ds1[coord].equals(ds2[coord]):
+                    raise ValueError(f"Time coordinates don't match between datasets")
+
+        logger.debug(f"Coordinate validation passed for: {coord_names}")
 
     def process_time_chunk(
         self,
@@ -160,42 +209,68 @@ class HumanComfortPipeline:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         logger.info(f"Initial memory: {initial_memory:.1f} MB")
 
-        # Load temperature data
-        logger.info("Loading temperature data...")
-        temp_ds = xr.open_zarr(self.temp_zarr_store, chunks=self.chunk_config)
+        try:
+            # Load temperature data with error handling
+            logger.info("Loading temperature data...")
+            try:
+                temp_ds = xr.open_zarr(self.temp_zarr_store, chunks=self.chunk_config)
+            except Exception as e:
+                logger.error(f"Failed to open temperature zarr store: {self.temp_zarr_store}")
+                raise FileNotFoundError(f"Temperature data not accessible: {e}") from e
 
-        # Load humidity data
-        logger.info("Loading humidity data...")
-        humid_ds = xr.open_zarr(self.humid_zarr_store, chunks=self.chunk_config)
+            # Load humidity data with error handling
+            logger.info("Loading humidity data...")
+            try:
+                humid_ds = xr.open_zarr(self.humid_zarr_store, chunks=self.chunk_config)
+            except Exception as e:
+                logger.error(f"Failed to open humidity zarr store: {self.humid_zarr_store}")
+                raise FileNotFoundError(f"Humidity data not accessible: {e}") from e
 
-        # Select time range for both
-        temp_subset = temp_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-        humid_subset = humid_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
+            # Validate required variables exist
+            if 'tmean' not in temp_ds.data_vars:
+                raise ValueError(
+                    f"Expected 'tmean' not found in temperature store. "
+                    f"Available: {list(temp_ds.data_vars)}"
+                )
+            if 'tdmean' not in humid_ds.data_vars:
+                raise ValueError(
+                    f"Expected 'tdmean' not found in humidity store. "
+                    f"Available: {list(humid_ds.data_vars)}"
+                )
 
-        # Rename variables for xclim compatibility
-        temp_rename_map = {
-            'tmean': 'tas',
-        }
-        humid_rename_map = {
-            'tdmean': 'tdew',
-        }
+            # Select ONLY needed variables (memory efficiency)
+            temp_ds = temp_ds[['tmean']]
+            humid_ds = humid_ds[['tdmean']]
 
-        for old_name, new_name in temp_rename_map.items():
-            if old_name in temp_subset:
-                temp_subset = temp_subset.rename({old_name: new_name})
-                logger.debug(f"Renamed temperature {old_name} to {new_name}")
+            # Select time range for both
+            temp_subset = temp_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
+            humid_subset = humid_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
 
-        for old_name, new_name in humid_rename_map.items():
-            if old_name in humid_subset:
-                humid_subset = humid_subset.rename({old_name: new_name})
-                logger.debug(f"Renamed humidity {old_name} to {new_name}")
+            # Validate time ranges exist
+            if len(temp_subset.time) == 0:
+                raise ValueError(f"No temperature data found for period {start_year}-{end_year}")
+            if len(humid_subset.time) == 0:
+                raise ValueError(f"No humidity data found for period {start_year}-{end_year}")
 
-        # Merge datasets
-        logger.info("Merging temperature and humidity datasets...")
-        combined_ds = xr.merge([
-            temp_subset[['tas']] if 'tas' in temp_subset else temp_subset,
-            humid_subset[['tdew']] if 'tdew' in humid_subset else humid_subset
-        ])
+            logger.info(f"  Temperature: {len(temp_subset.time)} timesteps")
+            logger.info(f"  Humidity: {len(humid_subset.time)} timesteps")
+
+            # Rename variables for xclim compatibility
+            temp_subset = temp_subset.rename({'tmean': 'tas'})
+            humid_subset = humid_subset.rename({'tdmean': 'tdew'})
+            logger.debug("Renamed variables: tmean→tas, tdmean→tdew")
+
+            # Validate coordinate alignment before merge
+            logger.info("Validating coordinate alignment...")
+            self._validate_coordinates(temp_subset, humid_subset, ['time', 'lat', 'lon'])
+
+            # Merge datasets (simplified - variables exist after validation)
+            logger.info("Merging temperature and humidity datasets...")
+            combined_ds = xr.merge([temp_subset, humid_subset])
+
+        except Exception as e:
+            logger.error(f"Failed during data loading/merging: {e}")
+            raise
 
         # Fix units
         unit_fixes = {
