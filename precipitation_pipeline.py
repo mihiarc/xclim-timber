@@ -299,7 +299,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process default period (2001-2024)
+  # Process default period (1981-2024)
   python precipitation_pipeline.py
 
   # Process single year
@@ -313,8 +313,8 @@ Examples:
     parser.add_argument(
         '--start-year',
         type=int,
-        default=2001,
-        help='Start year for processing (default: 2001)'
+        default=1981,
+        help='Start year for processing (default: 1981)'
     )
 
     parser.add_argument(

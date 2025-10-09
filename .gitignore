@@ -60,6 +60,10 @@ htmlcov/
 outputs/*
 !outputs/.gitkeep
 
+# Baseline percentiles (keep structure but ignore large .nc files)
+data/baselines/*.nc
+!data/baselines/.gitkeep
+
 # Temporary files
 *.tmp
 temp/

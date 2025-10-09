@@ -36,20 +36,34 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-1. **Create a configuration file**:
-```bash
-python src/pipeline.py --create-config
-```
-This creates `config_sample.yaml`. Edit it to specify your data paths and processing options.
+### One-Time Setup
 
-2. **Run the pipeline**:
+**Generate baseline percentiles for extreme indices** (required for temperature pipeline):
 ```bash
-python src/pipeline.py --config config_sample.yaml
+python calculate_baseline_percentiles.py
+```
+This is a one-time operation (~15 minutes) that calculates day-of-year percentiles from 1981-2000 baseline period. The results are cached in `data/baselines/` for all future runs.
+
+### Running the Pipelines
+
+1. **Run temperature pipeline** (18 indices):
+```bash
+python temperature_pipeline.py
 ```
 
-3. **Process specific variables**:
+2. **Run precipitation pipeline** (6 indices):
 ```bash
-python src/pipeline.py -c config.yaml -v temperature -v precipitation
+python precipitation_pipeline.py
+```
+
+3. **Run humidity pipeline** (8 indices):
+```bash
+python humidity_pipeline.py
+```
+
+All pipelines default to processing 1981-2024 data period. Use `--start-year` and `--end-year` to customize:
+```bash
+python temperature_pipeline.py --start-year 2000 --end-year 2020
 ```
 
 ## Configuration
@@ -135,7 +149,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline calculates **84 comprehensive climate indices** organized into seven scientifically-standard categories using the xclim library. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions.
+This pipeline currently implements **32 validated climate indices** (18 temperature + 6 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -158,61 +172,61 @@ The pipeline processes these core climate variables:
 - Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
 - Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
 
-### Temperature Indices (17 indices)
+### Temperature Indices (18 indices - Currently Implemented)
 
-**Basic Statistics:**
+**Basic Statistics (3):**
 - `tg_mean`: Annual mean temperature
 - `tx_max`: Annual maximum temperature
 - `tn_min`: Annual minimum temperature
-- `daily_temperature_range`: Mean daily temperature range (tmax - tmin)
-- `daily_temperature_range_variability`: Variability in daily temperature range
 
-**Threshold-Based Counts:**
+**Threshold-Based Counts (6):**
 - `tropical_nights`: Number of nights with minimum temperature > 20°C
 - `frost_days`: Number of days with minimum temperature < 0°C
 - `ice_days`: Number of days with maximum temperature < 0°C
 - `summer_days`: Number of days with maximum temperature > 25°C
 - `hot_days`: Number of days with maximum temperature > 30°C
-- `very_hot_days`: Number of days with maximum temperature > 35°C
-- `warm_nights`: Number of nights with minimum temperature > 15°C
 - `consecutive_frost_days`: Maximum consecutive frost days
 
-**Degree Day Metrics:**
+**Degree Day Metrics (3):**
 - `growing_degree_days`: Accumulated temperature above 10°C threshold (crop development)
 - `heating_degree_days`: Accumulated temperature below 17°C threshold (energy demand)
 - `cooling_degree_days`: Accumulated temperature above 18°C threshold (cooling energy demand)
 
-**Extreme Events:**
+**Extreme Percentile-Based Indices (6) - Uses 1981-2000 Baseline:**
 - `tx90p`: Warm days (daily maximum temperature > 90th percentile)
 - `tn90p`: Warm nights (daily minimum temperature > 90th percentile)
 - `tx10p`: Cool days (daily maximum temperature < 10th percentile)
 - `tn10p`: Cool nights (daily minimum temperature < 10th percentile)
-- `warm_spell_duration_index`: Warm spell duration (consecutive warm days)
-- `cold_spell_duration_index`: Cold spell duration (consecutive cold days)
+- `warm_spell_duration_index`: Warm spell duration (≥6 consecutive warm days)
+- `cold_spell_duration_index`: Cold spell duration (≥6 consecutive cold days)
 
-### Precipitation Indices (10 indices)
+### Precipitation Indices (6 indices - Currently Implemented)
 
-**Basic Statistics:**
-- `prcptot`: Total annual precipitation
+**Basic Statistics (4):**
+- `prcptot`: Total annual precipitation (wet days ≥ 1mm)
 - `rx1day`: Maximum 1-day precipitation amount
 - `rx5day`: Maximum 5-day precipitation amount
 - `sdii`: Simple daily intensity index (average precipitation on wet days)
 
-**Consecutive Events:**
+**Consecutive Events (2):**
 - `cdd`: Maximum consecutive dry days (< 1mm)
 - `cwd`: Maximum consecutive wet days (≥ 1mm)
 
-**Threshold Events:**
-- `r10mm`: Number of heavy precipitation days (≥ 10mm)
-- `r20mm`: Number of very heavy precipitation days (≥ 20mm)
-- `r95p`: Very wet days (above 95th percentile)
-- `r99p`: Extremely wet days (above 99th percentile)
+**Note:** Percentile-based precipitation indices (r95p, r99p) and threshold indices (r10mm, r20mm) planned for future implementation.
 
-### Humidity Indices (2 indices)
+### Humidity Indices (8 indices - Currently Implemented)
 
-**Basic Humidity Calculations:**
-- `dewpoint_temperature`: Dewpoint temperature from specific humidity
-- `relative_humidity`: Relative humidity calculation from specific humidity
+**Dewpoint Statistics (4):**
+- `dewpoint_mean`: Annual mean dewpoint temperature
+- `dewpoint_min`: Annual minimum dewpoint temperature
+- `dewpoint_max`: Annual maximum dewpoint temperature
+- `humid_days`: Days with dewpoint > 18°C (uncomfortable humidity)
+
+**Vapor Pressure Deficit (4):**
+- `vpdmax_mean`: Annual mean maximum VPD
+- `extreme_vpd_days`: Days with VPD > 4 kPa (plant water stress)
+- `vpdmin_mean`: Annual mean minimum VPD
+- `low_vpd_days`: Days with VPD < 0.5 kPa (high moisture/fog potential)
 
 ### Human Comfort Indices (2 indices)
 

@@ -2,7 +2,7 @@
 """
 Temperature indices pipeline for xclim-timber.
 Efficiently processes temperature-based climate indices using Zarr streaming.
-Calculates 12 temperature indices including degree days, extremes, and statistics.
+Calculates 18 temperature indices (12 basic + 6 extreme percentile-based).
 """
 
 import argparse
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class TemperaturePipeline:
     """
     Memory-efficient temperature indices pipeline using Zarr streaming.
-    Processes 12 temperature indices without loading full dataset into memory.
+    Processes 18 temperature indices (12 basic + 6 extreme) without loading full dataset into memory.
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -56,6 +56,12 @@ class TemperaturePipeline:
 
         # Zarr store path for temperature data
         self.zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature'
+
+        # Baseline percentiles path
+        self.baseline_file = Path('data/baselines/baseline_percentiles_1981_2000.nc')
+
+        # Load baseline percentiles for extreme indices
+        self.baseline_percentiles = self._load_baseline_percentiles()
 
         # Optimal chunk configuration (aligned with dimensions)
         self.chunk_config = {
@@ -84,6 +90,41 @@ class TemperaturePipeline:
         if self.client:
             self.client.close()
             self.client = None
+
+    def _load_baseline_percentiles(self):
+        """
+        Load pre-calculated baseline percentiles for extreme indices.
+
+        Returns:
+            dict: Dictionary of baseline percentile DataArrays
+
+        Raises:
+            FileNotFoundError: If baseline file doesn't exist with helpful message
+        """
+        if not self.baseline_file.exists():
+            error_msg = f"""
+ERROR: Baseline percentiles file not found at {self.baseline_file}
+
+Please generate baseline percentiles first:
+  python calculate_baseline_percentiles.py
+
+This is a one-time operation that takes ~15 minutes.
+See docs/BASELINE_DOCUMENTATION.md for more information.
+            """
+            raise FileNotFoundError(error_msg)
+
+        logger.info(f"Loading baseline percentiles from {self.baseline_file}")
+        ds = xr.open_dataset(self.baseline_file)
+
+        percentiles = {
+            'tx90p_threshold': ds['tx90p_threshold'],
+            'tx10p_threshold': ds['tx10p_threshold'],
+            'tn90p_threshold': ds['tn90p_threshold'],
+            'tn10p_threshold': ds['tn10p_threshold']
+        }
+
+        logger.info(f"  Loaded {len(percentiles)} baseline percentile thresholds")
+        return percentiles
 
     def calculate_temperature_indices(self, ds: xr.Dataset) -> dict:
         """
@@ -136,6 +177,68 @@ class TemperaturePipeline:
             logger.info("  - Calculating cooling degree days...")
             indices['cooling_degree_days'] = atmos.cooling_degree_days(
                 ds.tas, thresh='18 degC', freq='YS'
+            )
+
+        return indices
+
+    def calculate_extreme_indices(self, ds: xr.Dataset) -> dict:
+        """
+        Calculate percentile-based extreme temperature indices using pre-calculated baseline.
+
+        Args:
+            ds: Dataset with temperature variables (tasmax, tasmin)
+
+        Returns:
+            Dictionary of calculated extreme indices
+        """
+        indices = {}
+
+        # Warm/cool day indices (based on tasmax)
+        if 'tasmax' in ds:
+            logger.info("  - Calculating warm days (tx90p)...")
+            indices['tx90p'] = atmos.tx90p(
+                tasmax=ds.tasmax,
+                tasmax_per=self.baseline_percentiles['tx90p_threshold'],
+                freq='YS'
+            )
+
+            logger.info("  - Calculating cool days (tx10p)...")
+            indices['tx10p'] = atmos.tx10p(
+                tasmax=ds.tasmax,
+                tasmax_per=self.baseline_percentiles['tx10p_threshold'],
+                freq='YS'
+            )
+
+            logger.info("  - Calculating warm spell duration (WSDI)...")
+            indices['warm_spell_duration_index'] = atmos.warm_spell_duration_index(
+                tasmax=ds.tasmax,
+                tasmax_per=self.baseline_percentiles['tx90p_threshold'],
+                window=6,
+                freq='YS'
+            )
+
+        # Warm/cool night indices (based on tasmin)
+        if 'tasmin' in ds:
+            logger.info("  - Calculating warm nights (tn90p)...")
+            indices['tn90p'] = atmos.tn90p(
+                tasmin=ds.tasmin,
+                tasmin_per=self.baseline_percentiles['tn90p_threshold'],
+                freq='YS'
+            )
+
+            logger.info("  - Calculating cool nights (tn10p)...")
+            indices['tn10p'] = atmos.tn10p(
+                tasmin=ds.tasmin,
+                tasmin_per=self.baseline_percentiles['tn10p_threshold'],
+                freq='YS'
+            )
+
+            logger.info("  - Calculating cold spell duration (CSDI)...")
+            indices['cold_spell_duration_index'] = atmos.cold_spell_duration_index(
+                tasmin=ds.tasmin,
+                tasmin_per=self.baseline_percentiles['tn10p_threshold'],
+                window=6,
+                freq='YS'
             )
 
         return indices
@@ -196,10 +299,19 @@ class TemperaturePipeline:
                 combined_ds[var_name].attrs['units'] = unit
                 combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
 
-        # Calculate temperature indices
-        logger.info("Calculating temperature indices...")
-        all_indices = self.calculate_temperature_indices(combined_ds)
-        logger.info(f"  Calculated {len(all_indices)} temperature indices")
+        # Calculate basic temperature indices
+        logger.info("Calculating basic temperature indices...")
+        basic_indices = self.calculate_temperature_indices(combined_ds)
+        logger.info(f"  Calculated {len(basic_indices)} basic indices")
+
+        # Calculate extreme temperature indices
+        logger.info("Calculating extreme temperature indices...")
+        extreme_indices = self.calculate_extreme_indices(combined_ds)
+        logger.info(f"  Calculated {len(extreme_indices)} extreme indices")
+
+        # Merge all indices
+        all_indices = {**basic_indices, **extreme_indices}
+        logger.info(f"  Total: {len(all_indices)} temperature indices")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -318,11 +430,11 @@ class TemperaturePipeline:
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Temperature Indices Pipeline: Calculate 12 temperature-based climate indices",
+        description="Temperature Indices Pipeline: Calculate 18 temperature-based climate indices (12 basic + 6 extreme)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process default period (2001-2024)
+  # Process default period (1981-2024)
   python temperature_pipeline.py
 
   # Process single year
@@ -336,8 +448,8 @@ Examples:
     parser.add_argument(
         '--start-year',
         type=int,
-        default=2001,
-        help='Start year for processing (default: 2001)'
+        default=1981,
+        help='Start year for processing (default: 1981)'
     )
 
     parser.add_argument(
