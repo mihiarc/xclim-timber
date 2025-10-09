@@ -46,7 +46,7 @@ This is a one-time operation (15-25 minutes) that calculates day-of-year percent
 
 ### Running the Pipelines
 
-1. **Run temperature pipeline** (18 indices):
+1. **Run temperature pipeline** (25 indices):
 ```bash
 python temperature_pipeline.py
 ```
@@ -149,7 +149,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **36 validated climate indices** (18 temperature + 10 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **43 validated climate indices** (25 temperature + 10 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -172,12 +172,16 @@ The pipeline processes these core climate variables:
 - Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
 - Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
 
-### Temperature Indices (18 indices - Currently Implemented)
+### Temperature Indices (25 indices - Currently Implemented)
 
 **Basic Statistics (3):**
 - `tg_mean`: Annual mean temperature
 - `tx_max`: Annual maximum temperature
 - `tn_min`: Annual minimum temperature
+
+**Temperature Range Metrics (2):**
+- `daily_temperature_range`: Mean daily temperature range (tmax - tmin)
+- `extreme_temperature_range`: Annual max(tmax) - min(tmin) (annual extremes span)
 
 **Threshold-Based Counts (6):**
 - `tropical_nights`: Number of nights with minimum temperature > 20°C
@@ -187,10 +191,17 @@ The pipeline processes these core climate variables:
 - `hot_days`: Number of days with maximum temperature > 30°C
 - `consecutive_frost_days`: Maximum consecutive frost days
 
-**Degree Day Metrics (3):**
+**Frost Season Indices (4):**
+- `frost_season_length`: Duration from first to last frost (agricultural planning)
+- `frost_free_season_start`: Julian day of last spring frost (planting date)
+- `frost_free_season_end`: Julian day of first fall frost (harvest planning)
+- `frost_free_season_length`: Days between last spring and first fall frost
+
+**Degree Day Metrics (4):**
 - `growing_degree_days`: Accumulated temperature above 10°C threshold (crop development)
 - `heating_degree_days`: Accumulated temperature below 17°C threshold (energy demand)
 - `cooling_degree_days`: Accumulated temperature above 18°C threshold (cooling energy demand)
+- `freezing_degree_days`: Accumulated temperature below 0°C (winter severity)
 
 **Extreme Percentile-Based Indices (6) - Uses 1981-2000 Baseline:**
 - `tx90p`: Warm days (daily maximum temperature > 90th percentile)
@@ -236,7 +247,7 @@ The pipeline processes these core climate variables:
 
 ---
 
-## Planned Future Indices (48 additional indices toward 84 goal)
+## Planned Future Indices (41 additional indices toward 84 goal)
 
 The following index categories are planned for future implementation:
 
