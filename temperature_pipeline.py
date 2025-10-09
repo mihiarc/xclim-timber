@@ -2,7 +2,7 @@
 """
 Temperature indices pipeline for xclim-timber.
 Efficiently processes temperature-based climate indices using Zarr streaming.
-Calculates 18 temperature indices (12 basic + 6 extreme percentile-based).
+Calculates 25 temperature indices (19 basic + 6 extreme percentile-based).
 """
 
 import argparse
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class TemperaturePipeline:
     """
     Memory-efficient temperature indices pipeline using Zarr streaming.
-    Processes 18 temperature indices (12 basic + 6 extreme) without loading full dataset into memory.
+    Processes 25 temperature indices (19 basic + 6 extreme) without loading full dataset into memory.
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -177,6 +177,40 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             logger.info("  - Calculating cooling degree days...")
             indices['cooling_degree_days'] = atmos.cooling_degree_days(
                 ds.tas, thresh='18 degC', freq='YS'
+            )
+            logger.info("  - Calculating freezing degree days...")
+            indices['freezing_degree_days'] = atmos.freezing_degree_days(
+                ds.tas, freq='YS'
+            )
+
+        # Temperature range indices (require both tasmax and tasmin)
+        if 'tasmax' in ds and 'tasmin' in ds:
+            logger.info("  - Calculating daily temperature range...")
+            indices['daily_temperature_range'] = atmos.daily_temperature_range(
+                ds.tasmin, ds.tasmax, freq='YS'
+            )
+            logger.info("  - Calculating extreme temperature range...")
+            indices['extreme_temperature_range'] = atmos.extreme_temperature_range(
+                ds.tasmin, ds.tasmax, freq='YS'
+            )
+
+        # Frost season indices (require tasmin)
+        if 'tasmin' in ds:
+            logger.info("  - Calculating frost season length...")
+            indices['frost_season_length'] = atmos.frost_season_length(
+                ds.tasmin, freq='YS'
+            )
+            logger.info("  - Calculating frost-free season start...")
+            indices['frost_free_season_start'] = atmos.frost_free_season_start(
+                ds.tasmin, freq='YS'
+            )
+            logger.info("  - Calculating frost-free season end...")
+            indices['frost_free_season_end'] = atmos.frost_free_season_end(
+                ds.tasmin, freq='YS'
+            )
+            logger.info("  - Calculating frost-free season length...")
+            indices['frost_free_season_length'] = atmos.frost_free_season_length(
+                ds.tasmin, freq='YS'
             )
 
         return indices
@@ -430,7 +464,7 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Temperature Indices Pipeline: Calculate 18 temperature-based climate indices (12 basic + 6 extreme)",
+        description="Temperature Indices Pipeline: Calculate 25 temperature-based climate indices (19 basic + 6 extreme)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
