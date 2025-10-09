@@ -61,6 +61,11 @@ python precipitation_pipeline.py
 python humidity_pipeline.py
 ```
 
+4. **Run human comfort pipeline** (3 indices):
+```bash
+python human_comfort_pipeline.py
+```
+
 All pipelines default to processing 1981-2024 data period. Use `--start-year` and `--end-year` to customize:
 ```bash
 python temperature_pipeline.py --start-year 2000 --end-year 2020
@@ -149,7 +154,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **43 validated climate indices** (25 temperature + 10 precipitation + 8 humidity) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **46 validated climate indices** (25 temperature + 10 precipitation + 8 humidity + 3 human comfort) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -245,17 +250,20 @@ The pipeline processes these core climate variables:
 - `vpdmin_mean`: Annual mean minimum VPD
 - `low_vpd_days`: Days with VPD < 0.5 kPa (high moisture/fog potential)
 
----
-
-## Planned Future Indices (41 additional indices toward 84 goal)
-
-The following index categories are planned for future implementation:
-
-### Human Comfort Indices (2 indices - Planned)
+### Human Comfort Indices (3 indices - Currently Implemented)
 
 **Heat Stress Assessment:**
-- `heat_index`: Heat index combining temperature and humidity effects
+- `heat_index`: Heat index combining temperature and humidity effects (apparent temperature)
 - `humidex`: Canadian humidex index for apparent temperature
+
+**Humidity Validation:**
+- `relative_humidity`: Relative humidity calculated from dewpoint temperature (QC metric)
+
+---
+
+## Planned Future Indices (38 additional indices toward 84 goal)
+
+The following index categories are planned for future implementation:
 
 ### Evapotranspiration Indices (3 indices - Planned)
 
