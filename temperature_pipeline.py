@@ -303,76 +303,115 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         # Growing season timing indices (ETCCDI standard)
         if 'tas' in ds:
-            logger.info("  - Calculating growing season start...")
-            indices['growing_season_start'] = atmos.growing_season_start(
-                tas=ds.tas,
-                thresh='5 degC',
-                window=5,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating growing season start...")
+                indices['growing_season_start'] = atmos.growing_season_start(
+                    tas=ds.tas,
+                    thresh='5 degC',
+                    window=5,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance
+                indices['growing_season_start'].attrs['units'] = 'day_of_year'
+            except Exception as e:
+                logger.error(f"Failed to calculate growing_season_start: {e}")
 
-            logger.info("  - Calculating growing season end...")
-            indices['growing_season_end'] = atmos.growing_season_end(
-                tas=ds.tas,
-                thresh='5 degC',
-                window=5,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating growing season end...")
+                indices['growing_season_end'] = atmos.growing_season_end(
+                    tas=ds.tas,
+                    thresh='5 degC',
+                    window=5,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance
+                indices['growing_season_end'].attrs['units'] = 'day_of_year'
+            except Exception as e:
+                logger.error(f"Failed to calculate growing_season_end: {e}")
 
         # Spell frequency indices (event counting)
         if 'tas' in ds:
-            logger.info("  - Calculating cold spell frequency...")
-            indices['cold_spell_frequency'] = atmos.cold_spell_frequency(
-                tas=ds.tas,
-                thresh='-10 degC',
-                window=5,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating cold spell frequency...")
+                indices['cold_spell_frequency'] = atmos.cold_spell_frequency(
+                    tas=ds.tas,
+                    thresh='-10 degC',
+                    window=5,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance (dimensionless)
+                indices['cold_spell_frequency'].attrs['units'] = '1'
+            except Exception as e:
+                logger.error(f"Failed to calculate cold_spell_frequency: {e}")
 
         if 'tasmax' in ds:
-            logger.info("  - Calculating hot spell frequency...")
-            indices['hot_spell_frequency'] = atmos.hot_spell_frequency(
-                tasmax=ds.tasmax,
-                thresh='30 degC',
-                window=3,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating hot spell frequency...")
+                indices['hot_spell_frequency'] = atmos.hot_spell_frequency(
+                    tasmax=ds.tasmax,
+                    thresh='30 degC',
+                    window=3,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance (dimensionless)
+                indices['hot_spell_frequency'].attrs['units'] = '1'
+            except Exception as e:
+                logger.error(f"Failed to calculate hot_spell_frequency: {e}")
 
         if 'tasmin' in ds and 'tasmax' in ds:
-            logger.info("  - Calculating heat wave frequency...")
-            indices['heat_wave_frequency'] = atmos.heat_wave_frequency(
-                tasmin=ds.tasmin,
-                tasmax=ds.tasmax,
-                thresh_tasmin='22 degC',
-                thresh_tasmax='30 degC',
-                window=3,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating heat wave frequency...")
+                indices['heat_wave_frequency'] = atmos.heat_wave_frequency(
+                    tasmin=ds.tasmin,
+                    tasmax=ds.tasmax,
+                    thresh_tasmin='22 degC',
+                    thresh_tasmax='30 degC',
+                    window=3,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance (dimensionless)
+                indices['heat_wave_frequency'].attrs['units'] = '1'
+            except Exception as e:
+                logger.error(f"Failed to calculate heat_wave_frequency: {e}")
 
-            logger.info("  - Calculating freeze-thaw spell frequency...")
-            indices['freezethaw_spell_frequency'] = atmos.freezethaw_spell_frequency(
-                tasmin=ds.tasmin,
-                tasmax=ds.tasmax,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating freeze-thaw spell frequency...")
+                indices['freezethaw_spell_frequency'] = atmos.freezethaw_spell_frequency(
+                    tasmin=ds.tasmin,
+                    tasmax=ds.tasmax,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance (dimensionless, was "N/A")
+                indices['freezethaw_spell_frequency'].attrs['units'] = '1'
+            except Exception as e:
+                logger.error(f"Failed to calculate freezethaw_spell_frequency: {e}")
 
         # Seasonal timing - last spring frost
         if 'tasmin' in ds:
-            logger.info("  - Calculating last spring frost...")
-            indices['last_spring_frost'] = atmos.last_spring_frost(
-                tasmin=ds.tasmin,
-                thresh='0 degC',
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating last spring frost...")
+                indices['last_spring_frost'] = atmos.last_spring_frost(
+                    tasmin=ds.tasmin,
+                    thresh='0 degC',
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance
+                indices['last_spring_frost'].attrs['units'] = 'day_of_year'
+            except Exception as e:
+                logger.error(f"Failed to calculate last_spring_frost: {e}")
 
         # Temperature variability index
         if 'tasmin' in ds and 'tasmax' in ds:
-            logger.info("  - Calculating daily temperature range variability...")
-            indices['daily_temperature_range_variability'] = atmos.daily_temperature_range_variability(
-                tasmin=ds.tasmin,
-                tasmax=ds.tasmax,
-                freq='YS'
-            )
+            try:
+                logger.info("  - Calculating daily temperature range variability...")
+                indices['daily_temperature_range_variability'] = atmos.daily_temperature_range_variability(
+                    tasmin=ds.tasmin,
+                    tasmax=ds.tasmax,
+                    freq='YS'
+                )
+                # Units should already be correct (K or degC) from xclim
+            except Exception as e:
+                logger.error(f"Failed to calculate daily_temperature_range_variability: {e}")
 
         return indices
 
