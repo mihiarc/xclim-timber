@@ -2,7 +2,7 @@
 """
 Temperature indices pipeline for xclim-timber.
 Efficiently processes temperature-based climate indices using Zarr streaming.
-Calculates 25 temperature indices (19 basic + 6 extreme percentile-based).
+Calculates 33 temperature indices (19 basic + 6 extreme percentile-based + 8 advanced Phase 7).
 """
 
 import argparse
@@ -39,7 +39,12 @@ logger = logging.getLogger(__name__)
 class TemperaturePipeline:
     """
     Memory-efficient temperature indices pipeline using Zarr streaming.
-    Processes 25 temperature indices (19 basic + 6 extreme) without loading full dataset into memory.
+    Processes 33 temperature indices without loading full dataset into memory.
+
+    Indices:
+    - Basic (19): Core temperature statistics, thresholds, degree days, frost season
+    - Extreme (6): Percentile-based warm/cool days/nights, spell duration
+    - Advanced Phase 7 (8): Spell frequency, growing season timing, variability
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -277,6 +282,100 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         return indices
 
+    def calculate_advanced_temperature_indices(self, ds: xr.Dataset) -> dict:
+        """
+        Calculate advanced temperature extreme indices (Phase 7).
+
+        Adds 8 new indices focused on:
+        - Spell frequency (counting discrete events)
+        - Seasonal timing (growing season, last frost)
+        - Temperature variability
+
+        All indices use fixed thresholds (no baseline percentiles required).
+
+        Args:
+            ds: Dataset with temperature variables (tas, tasmax, tasmin)
+
+        Returns:
+            Dictionary of calculated advanced temperature indices
+        """
+        indices = {}
+
+        # Growing season timing indices (ETCCDI standard)
+        if 'tas' in ds:
+            logger.info("  - Calculating growing season start...")
+            indices['growing_season_start'] = atmos.growing_season_start(
+                tas=ds.tas,
+                thresh='5 degC',
+                window=5,
+                freq='YS'
+            )
+
+            logger.info("  - Calculating growing season end...")
+            indices['growing_season_end'] = atmos.growing_season_end(
+                tas=ds.tas,
+                thresh='5 degC',
+                window=5,
+                freq='YS'
+            )
+
+        # Spell frequency indices (event counting)
+        if 'tas' in ds:
+            logger.info("  - Calculating cold spell frequency...")
+            indices['cold_spell_frequency'] = atmos.cold_spell_frequency(
+                tas=ds.tas,
+                thresh='-10 degC',
+                window=5,
+                freq='YS'
+            )
+
+        if 'tasmax' in ds:
+            logger.info("  - Calculating hot spell frequency...")
+            indices['hot_spell_frequency'] = atmos.hot_spell_frequency(
+                tasmax=ds.tasmax,
+                thresh='30 degC',
+                window=3,
+                freq='YS'
+            )
+
+        if 'tasmin' in ds and 'tasmax' in ds:
+            logger.info("  - Calculating heat wave frequency...")
+            indices['heat_wave_frequency'] = atmos.heat_wave_frequency(
+                tasmin=ds.tasmin,
+                tasmax=ds.tasmax,
+                thresh_tasmin='22 degC',
+                thresh_tasmax='30 degC',
+                window=3,
+                freq='YS'
+            )
+
+            logger.info("  - Calculating freeze-thaw spell frequency...")
+            indices['freezethaw_spell_frequency'] = atmos.freezethaw_spell_frequency(
+                tasmin=ds.tasmin,
+                tasmax=ds.tasmax,
+                freq='YS'
+            )
+
+        # Seasonal timing - last spring frost
+        if 'tasmin' in ds:
+            logger.info("  - Calculating last spring frost...")
+            indices['last_spring_frost'] = atmos.last_spring_frost(
+                tasmin=ds.tasmin,
+                thresh='0 degC',
+                freq='YS'
+            )
+
+        # Temperature variability index
+        if 'tasmin' in ds and 'tasmax' in ds:
+            logger.info("  - Calculating daily temperature range variability...")
+            indices['daily_temperature_range_variability'] = atmos.daily_temperature_range_variability(
+                tasmin=ds.tasmin,
+                tasmax=ds.tasmax,
+                freq='YS'
+            )
+
+        return indices
+
 
     def process_time_chunk(
         self,
@@ -343,9 +442,15 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         extreme_indices = self.calculate_extreme_indices(combined_ds)
         logger.info(f"  Calculated {len(extreme_indices)} extreme indices")
 
+        # Calculate Phase 7 advanced temperature indices
+        logger.info("Calculating advanced temperature indices (Phase 7)...")
+        advanced_indices = self.calculate_advanced_temperature_indices(combined_ds)
+        logger.info(f"  Calculated {len(advanced_indices)} advanced indices")
+
         # Merge all indices
-        all_indices = {**basic_indices, **extreme_indices}
+        all_indices = {**basic_indices, **extreme_indices, **advanced_indices}
         logger.info(f"  Total: {len(all_indices)} temperature indices")
+        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Advanced (Phase 7): {len(advanced_indices)}")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -357,9 +462,12 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v2.0'
+        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v3.0 (Phase 7)'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         result_ds.attrs['indices_count'] = len(all_indices)
+        result_ds.attrs['phase'] = 'Phase 7: Advanced Temperature Extremes (+8 indices)'
+        result_ds.attrs['baseline_period'] = '1981-2000'
+        result_ds.attrs['note'] = 'Extreme indices (tx90p, tx10p, tn90p, tn10p, WSDI, CSDI) use baseline percentiles. Phase 7 adds spell frequency, growing season timing, and variability indices.'
 
         # Save output
         output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
@@ -464,9 +572,14 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Temperature Indices Pipeline: Calculate 25 temperature-based climate indices (19 basic + 6 extreme)",
+        description="Temperature Indices Pipeline: Calculate 33 temperature-based climate indices (Phase 7)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Indices calculated:
+  Basic (19): Temperature statistics, thresholds, degree days, frost season
+  Extreme (6): Percentile-based warm/cool days/nights, spell duration (uses 1981-2000 baseline)
+  Advanced Phase 7 (8): Spell frequency, growing season timing, variability
+
 Examples:
   # Process default period (1981-2024)
   python temperature_pipeline.py

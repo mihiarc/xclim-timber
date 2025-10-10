@@ -6,7 +6,7 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 53+ climate indices including:
+- **Comprehensive Indices**: Calculate 61+ climate indices including:
   - Temperature indices (frost days, tropical nights, growing degree days)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
   - Agricultural indices (growing season length, SPI)
@@ -46,7 +46,7 @@ This is a one-time operation (~20-30 minutes) that calculates day-of-year percen
 
 ### Running the Pipelines
 
-1. **Run temperature pipeline** (25 indices):
+1. **Run temperature pipeline** (33 indices - Phase 7):
 ```bash
 python temperature_pipeline.py
 ```
@@ -159,7 +159,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **53 validated climate indices** (25 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **61 validated climate indices** (33 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -182,7 +182,7 @@ The pipeline processes these core climate variables:
 - Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
 - Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
 
-### Temperature Indices (25 indices - Currently Implemented)
+### Temperature Indices (33 indices - Currently Implemented, Phase 7 Complete)
 
 **Basic Statistics (3):**
 - `tg_mean`: Annual mean temperature
@@ -220,6 +220,16 @@ The pipeline processes these core climate variables:
 - `tn10p`: Cool nights (daily minimum temperature < 10th percentile)
 - `warm_spell_duration_index`: Warm spell duration (≥6 consecutive warm days)
 - `cold_spell_duration_index`: Cold spell duration (≥6 consecutive cold days)
+
+**Advanced Temperature Extremes (8) - Phase 7:**
+- `growing_season_start`: First day when temperature exceeds 5°C for 5+ consecutive days (ETCCDI standard)
+- `growing_season_end`: First day after July 1st when temperature drops below 5°C for 5+ consecutive days
+- `cold_spell_frequency`: Number of discrete cold spell events (temperature < -10°C for 5+ days)
+- `hot_spell_frequency`: Number of hot spell events (tasmax > 30°C for 3+ days)
+- `heat_wave_frequency`: Number of heat wave events (tasmin > 22°C AND tasmax > 30°C for 3+ days)
+- `freezethaw_spell_frequency`: Number of freeze-thaw cycles (tasmax > 0°C AND tasmin ≤ 0°C on same day)
+- `last_spring_frost`: Last day in spring when tasmin < 0°C (critical for agriculture)
+- `daily_temperature_range_variability`: Average day-to-day variation in daily temperature range (climate stability)
 
 ### Precipitation Indices (13 indices - Currently Implemented, Phase 6 Complete)
 
@@ -281,7 +291,7 @@ The pipeline processes these core climate variables:
 
 ---
 
-## Planned Future Indices (27 additional indices toward 80 goal)
+## Planned Future Indices (19 additional indices toward 80 goal)
 
 The following index categories are planned for future implementation:
 

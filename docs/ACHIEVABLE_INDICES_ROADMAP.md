@@ -1,8 +1,8 @@
 # Achievable Indices Roadmap (Data-Constrained)
 
-**Last Updated:** 2025-10-10 (Post Phase 6)
-**Current Progress:** 53/80 indices (66.25%)
-**Remaining Achievable:** 27 indices
+**Last Updated:** 2025-10-10 (Post Phase 7)
+**Current Progress:** 61/80 indices (76.25%)
+**Remaining Achievable:** 19 indices
 
 ---
 
@@ -21,9 +21,9 @@
 
 ---
 
-## Currently Implemented (53 indices)
+## Currently Implemented (61 indices)
 
-### Temperature Pipeline (25 indices) ✅
+### Temperature Pipeline (33 indices) ✅ Phase 7 Complete
 **Basic Statistics (5):**
 - tg_mean, tx_max, tn_min, daily_temperature_range, extreme_temperature_range
 
@@ -87,25 +87,29 @@
 
 ---
 
-### 🟡 Phase 7: Advanced Temperature Extremes (6-8 indices)
-**Priority:** MEDIUM | **Complexity:** MEDIUM | **Time:** 3-4 hours
+### ✅ Phase 7: Advanced Temperature Extremes - COMPLETE
+**Status:** COMPLETED 2025-10-10 | **Implemented:** 8 indices
 
-**Spell Analysis (may require baseline updates):**
-1. `cold_spell_frequency` - Number of cold spell events (complementary to CSDI)
-2. `cold_spell_max_length` - Maximum cold spell duration
-3. `warm_spell_frequency` - Number of warm spell events (complementary to WSDI)
-4. `warm_spell_max_length` - Maximum warm spell duration
+**Completed Indices:**
+1. ✅ `growing_season_start` - First day when temperature exceeds 5°C for 5+ consecutive days (ETCCDI standard)
+2. ✅ `growing_season_end` - First day after July 1st when temperature drops below 5°C for 5+ consecutive days
+3. ✅ `cold_spell_frequency` - Number of cold spell events (tas < -10°C for 5+ days)
+4. ✅ `hot_spell_frequency` - Number of hot spell events (tasmax > 30°C for 3+ days)
+5. ✅ `heat_wave_frequency` - Number of heat wave events (tasmin > 22°C AND tasmax > 30°C for 3+ days)
+6. ✅ `freezethaw_spell_frequency` - Number of freeze-thaw cycles (tasmax > 0°C AND tasmin ≤ 0°C)
+7. ✅ `last_spring_frost` - Last day in spring when tasmin < 0°C (critical for agriculture)
+8. ✅ `daily_temperature_range_variability` - Average day-to-day variation in DTR (climate stability)
 
-**Seasonal Timing (4 indices):**
-5. `first_day_tx_above` - First day tmax exceeds threshold (spring warming)
-6. `first_day_tn_below` - First day tmin drops below threshold (fall cooling)
-7. `last_day_tx_above` - Last warm day before winter
-8. `last_day_tn_below` - Last cold day before summer
+**Notes:**
+- All indices use fixed thresholds (no baseline percentiles required) ✅
+- ETCCDI-aligned growing season indices provide agricultural planning value
+- Spell frequency indices count discrete events (complementary to existing spell duration indices)
+- Temperature variability adds climate stability assessment
+- All indices CF-compliant with comprehensive metadata
 
-**Note:** Some may require additional percentile thresholds or use fixed thresholds.
-
-**Data Required:** `tmax`, `tmin` ✅
-**Baseline Updates:** Possibly (need to review xclim requirements)
+**Data Used:** `tas`, `tmax`, `tmin` ✅
+**Baseline Updates:** None required ✅
+**Actual Implementation Time:** ~3 hours
 
 ---
 
@@ -197,18 +201,18 @@
 
 | Category | Current | Achievable | Cannot Do | Notes |
 |----------|---------|------------|-----------|-------|
-| **Temperature** | 25 | +9 | ~5 | Most temperature indices achievable |
+| **Temperature** | 33 | +1 | ~5 | Phase 7 complete, most achievable indices done |
 | **Precipitation** | 13 | +9 | ~5 | Phase 6 complete, missing snow-related only |
 | **Humidity/Comfort** | 11 | +1 | ~2 | Limited by no specific humidity |
 | **Multivariate** | 4 | +0 | ~0 | Core compound events done |
 | **Agricultural** | 0 | +5 | ~6 | Simple growing season only |
 | **Drought** | 0 | +3 | ~2 | SPI possible, SPEI needs more data |
 | **Fire/Wind/Snow** | 0 | +0 | ~40 | All require unavailable data |
-| **TOTAL** | **53** | **+27** | **~60** | **Target: 80 indices** |
+| **TOTAL** | **61** | **+19** | **~60** | **Target: 80 indices** |
 
 **Revised Goal:** 80 indices (down from 84)
-- **Current:** 53 (66.25% of revised goal)
-- **Achievable:** 27 more indices
+- **Current:** 61 (76.25% of revised goal)
+- **Achievable:** 19 more indices
 - **Cannot implement:** ~4 indices from original 84-index goal
 
 **Original 84-index goal breakdown:**
@@ -230,14 +234,16 @@
 - CF-compliant metadata ✅
 - Tested with 2023 data ✅
 
-### Priority 2: Phase 7 - Advanced Temperature (6-8 indices)
-**Target:** 53 → 61 indices (76.25% of 80)
-**Time:** 3-4 hours
-**Justification:**
-- Medium complexity
-- May need baseline updates (research required)
-- Completes temperature extreme analysis
-- High climate change monitoring value
+### ✅ Priority 2: Phase 7 - Advanced Temperature (COMPLETE)
+**Target:** 53 → 61 indices (76.25% of 80) ✅ ACHIEVED
+**Time:** ~3 hours (actual)
+**Status:** COMPLETED 2025-10-10
+**Outcome:**
+- Implemented 8 indices (spell frequency, growing season timing, temperature variability)
+- No baseline updates needed (all fixed thresholds) ✅
+- CF-compliant metadata ✅
+- Tested with 2023 data ✅
+- High climate change monitoring and agricultural value achieved
 
 ### Priority 3: Phase 8 - Growing Season (3-5 indices)
 **Target:** 61 → 66 indices (82.5% of 80)
@@ -267,31 +273,32 @@
 
 ---
 
-## Next Action: Phase 7 - Advanced Temperature Extremes
+## Next Action: Phase 8 - Growing Season & Agricultural Basics
 
-**Estimated Implementation Time:** 3-4 hours
+**Estimated Implementation Time:** 2-3 hours
 **Files to Modify:**
-- `temperature_pipeline.py` (add 6-8 indices)
-- `README.md` (update count: 53 → 61)
+- `temperature_pipeline.py` or new `agricultural_pipeline.py` (add 3-5 indices)
+- `README.md` (update count: 61 → 66)
 - `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
-- May need baseline updates (research xclim requirements first)
+- No baseline updates needed ✅
 
 **Indices to Implement:**
-1. Cold spell analysis (frequency, max length)
-2. Warm spell analysis (frequency, max length)
-3. Seasonal timing indices (first/last days above/below thresholds)
+1. `growing_season_length` - Period with temperature suitable for plant growth
+2. `potential_evapotranspiration` - Thornthwaite method (temperature only)
+3. `thawing_degree_days` - TDD > 0°C (permafrost monitoring)
+
+**Note:** Growing season start/end already implemented in Phase 7, so focus on length and water balance indices
 
 **Test Plan:**
-1. Research baseline requirements for spell analysis
-2. Run with 2023 data (single year validation)
-3. Verify all new indices calculate correctly
-4. Check CF-compliance of metadata
-5. Validate against known climate patterns
+1. Run with 2023 data (single year validation)
+2. Verify all new indices calculate correctly
+3. Check CF-compliance of metadata
+4. Validate against agricultural standards
 
-**After Phase 7:**
-- Progress: 61/80 indices (76.25%)
-- Remaining: 19 indices across 3 phases
-- Estimated total time to 80 indices: 11-17 hours
+**After Phase 8:**
+- Progress: 66/80 indices (82.5%)
+- Remaining: 14 indices across 2 phases
+- Estimated total time to 80 indices: 6-14 hours
 
 ---
 
@@ -322,12 +329,20 @@
 
 **Realistic Goals:**
 - **Phase 6 Complete:** 53/80 indices (66.25%) ✅
-- **Next milestone:** Phase 7 (Advanced Temperature) → 61 indices (76.25%)
+- **Phase 7 Complete:** 61/80 indices (76.25%) ✅
+- **Next milestone:** Phase 8 (Growing Season & Agricultural) → 66 indices (82.5%)
 - **End of 2025:** 80/80 indices (100% of achievable)
 - **With additional data:** 100+ indices possible
 
 **Current Limitation:** PRISM data scope (temperature + precipitation + basic humidity)
 **Current Strength:** High-quality, long-term, fine-resolution data for CONUS
+
+**Phase 7 Learnings:**
+- Fixed-threshold spell frequency indices (cold spell, hot spell, heat wave) complement existing duration indices
+- ETCCDI-aligned growing season timing indices provide high agricultural value
+- Temperature variability metrics add climate stability assessment
+- All 8 indices CF-compliant without requiring baseline percentiles
+- ~3 hours implementation time for 8 complex spell and timing indices
 
 **Phase 6 Learnings:**
 - Focus on distinct, non-redundant indices using xclim's validated functions
