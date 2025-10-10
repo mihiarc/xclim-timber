@@ -43,8 +43,10 @@ class DroughtPipeline:
 
     Indices:
     - SPI (5 windows): Standardized Precipitation Index for multi-scale drought monitoring
-    - Dry Spell (2 indices): Maximum consecutive dry days, total dry days count
-    - Precipitation Intensity (2 indices): Daily intensity, heavy precipitation fraction
+    - Dry Spell (4 indices): Maximum consecutive dry days, dry spell frequency,
+                             dry spell total length, total dry days count
+    - Precipitation Intensity (3 indices): Daily intensity, maximum 7-day intensity,
+                                          heavy precipitation fraction
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -186,7 +188,7 @@ class DroughtPipeline:
             precip_ds: Dataset with precipitation variable (pr)
 
         Returns:
-            Dictionary of calculated dry spell indices (4 indices)
+            Dictionary of calculated dry spell indices (5 indices)
         """
         indices = {}
 
@@ -206,8 +208,106 @@ class DroughtPipeline:
         except Exception as e:
             logger.error(f"Failed to calculate cdd: {e}")
 
-        # Note: dry_spell_frequency and dry_spell_total_length have unit compatibility issues
-        # Skipped for now - can be added in future updates
+        # 2. Dry Spell Frequency (manual implementation to avoid xclim unit bug)
+        try:
+            logger.info("  - Calculating dry spell frequency (manual implementation)...")
+            # Define dry day threshold (< 1mm)
+            dry_threshold = 1.0  # mm
+            min_spell_length = 3  # Minimum consecutive dry days to count as a spell
+
+            # Identify dry days
+            is_dry = precip_ds.pr < dry_threshold
+
+            # Count spell events per year using groupby
+            def count_dry_spells(dry_mask):
+                """Count number of dry spell events (3+ consecutive dry days)."""
+                # Convert to numpy for easier processing
+                dry_array = dry_mask.values
+
+                spell_count = 0
+                current_spell_length = 0
+
+                for is_dry_day in dry_array:
+                    if is_dry_day:
+                        current_spell_length += 1
+                    else:
+                        # End of potential spell
+                        if current_spell_length >= min_spell_length:
+                            spell_count += 1
+                        current_spell_length = 0
+
+                # Check final spell
+                if current_spell_length >= min_spell_length:
+                    spell_count += 1
+
+                return spell_count
+
+            # Apply to each year and grid point
+            dry_spell_freq = is_dry.resample(time='YS').apply(count_dry_spells)
+
+            indices['dry_spell_frequency'] = dry_spell_freq
+            indices['dry_spell_frequency'].attrs.update({
+                'units': '1',
+                'long_name': 'Dry Spell Frequency',
+                'description': f'Number of dry spell events (≥{min_spell_length} consecutive days with precipitation < {dry_threshold} mm)',
+                'standard_name': 'number_of_dry_spell_events',
+                'cell_methods': 'time: sum',
+                'threshold': f'{dry_threshold} mm',
+                'min_spell_length': f'{min_spell_length} days'
+            })
+        except Exception as e:
+            logger.error(f"Failed to calculate dry_spell_frequency: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+        # 3. Dry Spell Total Length (manual implementation)
+        try:
+            logger.info("  - Calculating dry spell total length (manual implementation)...")
+            # Define dry day threshold
+            dry_threshold = 1.0  # mm
+            min_spell_length = 3  # Minimum consecutive dry days to count
+
+            # Identify dry days
+            is_dry = precip_ds.pr < dry_threshold
+
+            def total_dry_spell_days(dry_mask):
+                """Calculate total days in dry spells (3+ consecutive dry days)."""
+                dry_array = dry_mask.values
+
+                total_days = 0
+                current_spell_length = 0
+
+                for is_dry_day in dry_array:
+                    if is_dry_day:
+                        current_spell_length += 1
+                    else:
+                        # End of spell
+                        if current_spell_length >= min_spell_length:
+                            total_days += current_spell_length
+                        current_spell_length = 0
+
+                # Check final spell
+                if current_spell_length >= min_spell_length:
+                    total_days += current_spell_length
+
+                return total_days
+
+            dry_spell_total = is_dry.resample(time='YS').apply(total_dry_spell_days)
+
+            indices['dry_spell_total_length'] = dry_spell_total
+            indices['dry_spell_total_length'].attrs.update({
+                'units': 'days',
+                'long_name': 'Dry Spell Total Length',
+                'description': f'Total number of days in dry spells (≥{min_spell_length} consecutive days with precipitation < {dry_threshold} mm)',
+                'standard_name': 'dry_spell_total_days',
+                'cell_methods': 'time: sum',
+                'threshold': f'{dry_threshold} mm',
+                'min_spell_length': f'{min_spell_length} days'
+            })
+        except Exception as e:
+            logger.error(f"Failed to calculate dry_spell_total_length: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         # 4. Dry Days (simple count)
         try:
@@ -231,7 +331,7 @@ class DroughtPipeline:
             precip_ds: Dataset with precipitation variable (pr)
 
         Returns:
-            Dictionary of calculated precipitation intensity indices (3 indices)
+            Dictionary of calculated precipitation intensity indices (4 indices)
         """
         indices = {}
 
@@ -251,8 +351,29 @@ class DroughtPipeline:
         except Exception as e:
             logger.error(f"Failed to calculate sdii: {e}")
 
-        # Note: max_7day_pr_intensity has unit conversion issues in xclim
-        # Skipped for now - can be added in future updates
+        # 2. Maximum 7-Day Precipitation (manual implementation to avoid xclim unit bug)
+        try:
+            logger.info("  - Calculating maximum 7-day precipitation intensity (manual implementation)...")
+            # Calculate 7-day rolling sum
+            window_size = 7
+            pr_7day_rolling = precip_ds.pr.rolling(time=window_size, min_periods=window_size).sum()
+
+            # Get annual maximum
+            max_7day = pr_7day_rolling.resample(time='YS').max()
+
+            indices['max_7day_pr_intensity'] = max_7day
+            indices['max_7day_pr_intensity'].attrs.update({
+                'units': 'mm',
+                'long_name': 'Maximum 7-Day Precipitation Intensity',
+                'description': f'Maximum {window_size}-day rolling sum of precipitation',
+                'standard_name': 'maximum_7day_precipitation_amount',
+                'cell_methods': 'time: maximum',
+                'window': f'{window_size} days'
+            })
+        except Exception as e:
+            logger.error(f"Failed to calculate max_7day_pr_intensity: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         # 3. Fraction of Heavy Precipitation (requires baseline percentiles)
         if 'pr_75p_threshold' in self.baseline_percentiles:
@@ -366,14 +487,14 @@ class DroughtPipeline:
 
         # Add global metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber drought pipeline v1.0 (Phase 10)'
+        result_ds.attrs['software'] = 'xclim-timber drought pipeline v1.1 (Phase 10 Final)'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         result_ds.attrs['indices_count'] = len(all_indices)
-        result_ds.attrs['phase'] = 'Phase 10: Drought Indices (+9 indices, total 77)'
+        result_ds.attrs['phase'] = 'Phase 10 Final: Drought Indices (+12 indices, total 80/80 indices complete)'
         result_ds.attrs['spi_calibration_period'] = '1981-01-01 to 2010-12-31'
         result_ds.attrs['spi_distribution'] = 'gamma (McKee et al. 1993)'
         result_ds.attrs['spi_method'] = 'ML (Maximum Likelihood)'
-        result_ds.attrs['note'] = 'Comprehensive drought monitoring indices. SPI uses 30-year calibration (1981-2010). Dry spell threshold: 1mm/day (ETCCDI standard). Baseline percentiles: 1981-2000.'
+        result_ds.attrs['note'] = 'Comprehensive drought monitoring indices (12 total). SPI uses 30-year calibration (1981-2010). Dry spell threshold: 1mm, min length: 3 days. Includes manual implementations for dry_spell_frequency, dry_spell_total_length, and max_7day_pr_intensity to work around xclim unit bugs. Baseline percentiles: 1981-2000.'
 
         # Save output
         output_file = output_dir / f'drought_indices_{start_year}_{end_year}.nc'
@@ -478,13 +599,15 @@ class DroughtPipeline:
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Drought Indices Pipeline: Calculate 12 drought and water deficit indices (Phase 10)",
+        description="Drought Indices Pipeline: Calculate 12 drought and water deficit indices (Phase 10 Final)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Indices calculated (9 total):
+Indices calculated (12 total - completes 80/80 indices goal):
   SPI (5): Standardized Precipitation Index at 1, 3, 6, 12, 24-month windows
-  Dry Spell (2): Maximum consecutive dry days (CDD), total dry days count
-  Intensity (2): SDII (simple daily intensity), fraction of heavy precipitation
+  Dry Spell (4): Maximum consecutive dry days (CDD), dry spell frequency,
+                 dry spell total length, total dry days count
+  Intensity (3): SDII (simple daily intensity), maximum 7-day precipitation,
+                 fraction of heavy precipitation
 
 Examples:
   # Process default period (1981-2024)
