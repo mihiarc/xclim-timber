@@ -2,7 +2,7 @@
 """
 Temperature indices pipeline for xclim-timber.
 Efficiently processes temperature-based climate indices using Zarr streaming.
-Calculates 33 temperature indices (19 basic + 6 extreme percentile-based + 8 advanced Phase 7).
+Calculates 35 temperature indices (19 basic + 6 extreme percentile-based + 8 Phase 7 + 2 Phase 9).
 """
 
 import argparse
@@ -13,6 +13,7 @@ from typing import List, Optional
 import warnings
 import xarray as xr
 import xclim.indicators.atmos as atmos
+import xclim.indices as xi  # For temperature_seasonality (Phase 9)
 from dask.distributed import Client
 import dask
 import psutil
@@ -39,12 +40,13 @@ logger = logging.getLogger(__name__)
 class TemperaturePipeline:
     """
     Memory-efficient temperature indices pipeline using Zarr streaming.
-    Processes 33 temperature indices without loading full dataset into memory.
+    Processes 35 temperature indices without loading full dataset into memory.
 
     Indices:
     - Basic (19): Core temperature statistics, thresholds, degree days, frost season
     - Extreme (6): Percentile-based warm/cool days/nights, spell duration
     - Advanced Phase 7 (8): Spell frequency, growing season timing, variability
+    - Advanced Phase 9 (2): Temperature seasonality, heat wave index
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -413,6 +415,36 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             except Exception as e:
                 logger.error(f"Failed to calculate daily_temperature_range_variability: {e}")
 
+        # Phase 9: Temperature Variability Indices
+        if 'tas' in ds:
+            try:
+                logger.info("  - Calculating temperature seasonality (Phase 9)...")
+                indices['temperature_seasonality'] = xi.temperature_seasonality(
+                    tas=ds.tas,
+                    freq='YS'
+                )
+                # Fix units metadata for CF-compliance
+                indices['temperature_seasonality'].attrs['units'] = '%'
+                indices['temperature_seasonality'].attrs['long_name'] = 'Temperature Seasonality (Coefficient of Variation)'
+                indices['temperature_seasonality'].attrs['description'] = 'Annual temperature coefficient of variation (standard deviation as percentage of mean)'
+            except Exception as e:
+                logger.error(f"Failed to calculate temperature_seasonality: {e}")
+
+        if 'tasmax' in ds:
+            try:
+                logger.info("  - Calculating heat wave index (total heat wave days, Phase 9)...")
+                indices['heat_wave_index'] = atmos.heat_wave_index(
+                    tasmax=ds.tasmax,
+                    thresh='25 degC',
+                    window=5,
+                    freq='YS'
+                )
+                # Update long_name to distinguish from heat_wave_frequency
+                indices['heat_wave_index'].attrs['long_name'] = 'Heat Wave Index (Total Heat Wave Days)'
+                indices['heat_wave_index'].attrs['description'] = 'Total days that are part of a heat wave (5+ consecutive days with tasmax > 25°C)'
+            except Exception as e:
+                logger.error(f"Failed to calculate heat_wave_index: {e}")
+
         return indices
 
 
@@ -481,15 +513,15 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         extreme_indices = self.calculate_extreme_indices(combined_ds)
         logger.info(f"  Calculated {len(extreme_indices)} extreme indices")
 
-        # Calculate Phase 7 advanced temperature indices
-        logger.info("Calculating advanced temperature indices (Phase 7)...")
+        # Calculate Phase 7 & Phase 9 advanced temperature indices
+        logger.info("Calculating advanced temperature indices (Phase 7 & 9)...")
         advanced_indices = self.calculate_advanced_temperature_indices(combined_ds)
         logger.info(f"  Calculated {len(advanced_indices)} advanced indices")
 
         # Merge all indices
         all_indices = {**basic_indices, **extreme_indices, **advanced_indices}
         logger.info(f"  Total: {len(all_indices)} temperature indices")
-        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Advanced (Phase 7): {len(advanced_indices)}")
+        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Advanced (Phase 7+9): {len(advanced_indices)}")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -501,12 +533,12 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v3.0 (Phase 7)'
+        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v4.0 (Phase 9)'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         result_ds.attrs['indices_count'] = len(all_indices)
-        result_ds.attrs['phase'] = 'Phase 7: Advanced Temperature Extremes (+8 indices)'
+        result_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
         result_ds.attrs['baseline_period'] = '1981-2000'
-        result_ds.attrs['note'] = 'Extreme indices (tx90p, tx10p, tn90p, tn10p, WSDI, CSDI) use baseline percentiles. Phase 7 adds spell frequency, growing season timing, and variability indices.'
+        result_ds.attrs['note'] = 'Extreme indices (tx90p, tx10p, tn90p, tn10p, WSDI, CSDI) use baseline percentiles. Phase 7 adds spell frequency, growing season timing. Phase 9 adds temperature seasonality and heat wave index.'
 
         # Save output
         output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
@@ -611,13 +643,14 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Temperature Indices Pipeline: Calculate 33 temperature-based climate indices (Phase 7)",
+        description="Temperature Indices Pipeline: Calculate 35 temperature-based climate indices (Phase 9)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Indices calculated:
   Basic (19): Temperature statistics, thresholds, degree days, frost season
   Extreme (6): Percentile-based warm/cool days/nights, spell duration (uses 1981-2000 baseline)
   Advanced Phase 7 (8): Spell frequency, growing season timing, variability
+  Advanced Phase 9 (2): Temperature seasonality, heat wave index
 
 Examples:
   # Process default period (1981-2024)

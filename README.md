@@ -6,11 +6,11 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 66+ climate indices including:
-  - Temperature indices (frost days, tropical nights, growing degree days)
+- **Comprehensive Indices**: Calculate 68+ climate indices including:
+  - Temperature indices (frost days, tropical nights, growing degree days, temperature variability)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
   - Agricultural indices (growing season length, PET, corn heat units)
-  - Extreme event indices (heat waves, cold spells)
+  - Extreme event indices (heat waves, cold spells, spell frequency)
 - **Data Quality Control**: Automatic outlier detection and missing value handling
 - **CF Compliance**: Outputs follow Climate and Forecast (CF) conventions
 - **Flexible Configuration**: YAML-based configuration for easy customization
@@ -46,7 +46,7 @@ This is a one-time operation (~20-30 minutes) that calculates day-of-year percen
 
 ### Running the Pipelines
 
-1. **Run temperature pipeline** (33 indices - Phase 7):
+1. **Run temperature pipeline** (35 indices - Phase 9):
 ```bash
 python temperature_pipeline.py
 ```
@@ -164,7 +164,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **66 validated climate indices** (33 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate + 5 agricultural) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **68 validated climate indices** (35 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate + 5 agricultural) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -187,7 +187,7 @@ The pipeline processes these core climate variables:
 - Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
 - Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
 
-### Temperature Indices (33 indices - Currently Implemented, Phase 7 Complete)
+### Temperature Indices (35 indices - Currently Implemented, Phase 9 Complete)
 
 **Basic Statistics (3):**
 - `tg_mean`: Annual mean temperature
@@ -235,6 +235,10 @@ The pipeline processes these core climate variables:
 - `freezethaw_spell_frequency`: Number of freeze-thaw cycles (tasmax > 0°C AND tasmin ≤ 0°C on same day)
 - `last_spring_frost`: Last day in spring when tasmin < 0°C (critical for agriculture)
 - `daily_temperature_range_variability`: Average day-to-day variation in daily temperature range (climate stability)
+
+**Temperature Variability (2) - Phase 9:**
+- `temperature_seasonality`: Annual temperature coefficient of variation (standard deviation as percentage of mean) - ANUCLIM BIO4 variable
+- `heat_wave_index`: Total days that are part of a heat wave (5+ consecutive days with tasmax > 25°C)
 
 ### Precipitation Indices (13 indices - Currently Implemented, Phase 6 Complete)
 
@@ -315,18 +319,20 @@ The pipeline processes these core climate variables:
 
 ---
 
-## Planned Future Indices (14 additional indices toward 80 goal)
+## Planned Future Indices (12 additional indices toward 80 goal)
 
 The following index categories are planned for future implementation:
 
-### Drought & Water Balance Indices (3 indices - Planned)
+### Drought & Water Balance Indices (11+ indices - Planned Phase 10)
 
-**Advanced Water Balance:**
-- `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET (requires wind and solar radiation data)
+**Advanced Drought Monitoring:**
 - `spi_3`: 3-month Standardized Precipitation Index (drought monitoring)
-- `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
+- `spi_6`: 6-month Standardized Precipitation Index
+- `spi_12`: 12-month Standardized Precipitation Index
+- `consecutive_dry_days_variability`: Interannual variability of CDD
+- Additional SPI windows and drought metrics
 
-**Note:** SPI and SPEI require statistical distribution fitting and longer processing time
+**Note:** SPI requires statistical distribution fitting (gamma distribution) and longer processing time. SPEI requires PET which needs wind and solar radiation data (not available in PRISM).
 
 ---
 

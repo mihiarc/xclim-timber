@@ -1,8 +1,8 @@
 # Achievable Indices Roadmap (Data-Constrained)
 
-**Last Updated:** 2025-10-10 (Post Phase 8)
-**Current Progress:** 66/80 indices (82.5%)
-**Remaining Achievable:** 14 indices
+**Last Updated:** 2025-10-10 (Post Phase 9)
+**Current Progress:** 68/80 indices (85%)
+**Remaining Achievable:** 12 indices
 
 ---
 
@@ -21,9 +21,9 @@
 
 ---
 
-## Currently Implemented (66 indices)
+## Currently Implemented (68 indices)
 
-### Temperature Pipeline (33 indices) ✅ Phase 7 Complete
+### Temperature Pipeline (35 indices) ✅ Phase 9 Complete
 **Basic Statistics (5):**
 - tg_mean, tx_max, tn_min, daily_temperature_range, extreme_temperature_range
 
@@ -38,6 +38,12 @@
 
 **Percentile Extremes (6):**
 - tx90p, tx10p, tn90p, tn10p, warm_spell_duration_index, cold_spell_duration_index
+
+**Advanced Phase 7 (8):**
+- growing_season_start, growing_season_end, cold_spell_frequency, hot_spell_frequency, heat_wave_frequency, freezethaw_spell_frequency, last_spring_frost, daily_temperature_range_variability
+
+**Temperature Variability Phase 9 (2):**
+- temperature_seasonality, heat_wave_index
 
 ### Precipitation Pipeline (13 indices) ✅ Phase 6 Complete
 **Basic Statistics (4):**
@@ -153,15 +159,23 @@
 
 ---
 
-### 🟠 Phase 9: Temperature Variability (3-4 indices)
-**Priority:** MEDIUM-LOW | **Complexity:** LOW-MEDIUM | **Time:** 2 hours
+### ✅ Phase 9: Temperature Variability - COMPLETE
+**Status:** COMPLETED 2025-10-10 | **Implemented:** 2 indices
 
-1. `daily_temperature_range_variability` - Std dev of DTR (climate stability)
-2. `temperature_seasonality` - Coefficient of variation of monthly temperatures
-3. `diurnal_temperature_range_mean` - Already have daily_temperature_range ✅
-4. `extreme_heat_wave_days` - Days in heat waves (may need new baseline threshold)
+**Completed Indices:**
+1. ✅ `temperature_seasonality` - Annual temperature coefficient of variation (standard deviation as percentage of mean) - ANUCLIM/WorldClim BIO4 variable
+2. ✅ `heat_wave_index` - Total days that are part of a heat wave (5+ consecutive days with tasmax > 25°C)
 
-**Data Required:** `tmax`, `tmin` ✅
+**Notes:**
+- Both indices use fixed thresholds (no baseline percentiles required) ✅
+- `daily_temperature_range_variability` was already implemented in Phase 7
+- `temperature_seasonality` is in `xclim.indices` (not `atmos`)
+- `heat_wave_index` counts total days (different from `heat_wave_frequency` which counts discrete events)
+- All indices CF-compliant with comprehensive metadata
+
+**Data Used:** `tas`, `tmax` ✅
+**Baseline Updates:** None required ✅
+**Actual Implementation Time:** ~1 hour
 
 ---
 
@@ -222,18 +236,18 @@
 
 | Category | Current | Achievable | Cannot Do | Notes |
 |----------|---------|------------|-----------|-------|
-| **Temperature** | 33 | +1 | ~5 | Phase 7 complete, most achievable indices done |
-| **Precipitation** | 13 | +9 | ~5 | Phase 6 complete, missing snow-related only |
-| **Humidity/Comfort** | 11 | +1 | ~2 | Limited by no specific humidity |
+| **Temperature** | 35 | +0 | ~5 | Phase 9 complete, all achievable temperature indices done |
+| **Precipitation** | 13 | +0 | ~5 | Phase 6 complete, missing snow-related only |
+| **Humidity/Comfort** | 11 | +0 | ~2 | Complete with available data |
 | **Multivariate** | 4 | +0 | ~0 | Core compound events done |
 | **Agricultural** | 5 | +0 | ~6 | Phase 8 complete, core agricultural indices done |
-| **Drought** | 0 | +3 | ~2 | SPI possible, SPEI needs more data |
+| **Drought** | 0 | +12 | ~2 | SPI possible (multiple windows), SPEI needs more data |
 | **Fire/Wind/Snow** | 0 | +0 | ~40 | All require unavailable data |
-| **TOTAL** | **66** | **+14** | **~60** | **Target: 80 indices** |
+| **TOTAL** | **68** | **+12** | **~60** | **Target: 80 indices** |
 
 **Revised Goal:** 80 indices (down from 84)
-- **Current:** 66 (82.5% of revised goal)
-- **Achievable:** 14 more indices
+- **Current:** 68 (85% of revised goal)
+- **Achievable:** 12 more indices (drought focus)
 - **Cannot implement:** ~4 indices from original 84-index goal
 
 **Original 84-index goal breakdown:**
@@ -277,61 +291,52 @@
 - Tested with 2023 data ✅
 - High agricultural decision-making value achieved
 
-### Priority 4: Phase 9 - Temperature Variability (1-3 indices)
-**Target:** 66 → 69 indices (86.25% of 80)
-**Time:** 1-2 hours
-**Justification:**
-- Low-medium complexity
-- Climate stability metrics
-- Note: `daily_temperature_range_variability` already implemented in Phase 7
-- Remaining: temperature_seasonality, extreme_heat_wave_days
+### ✅ Priority 4: Phase 9 - Temperature Variability (COMPLETE)
+**Target:** 66 → 68 indices (85% of 80) ✅ ACHIEVED
+**Time:** ~1 hour (actual)
+**Status:** COMPLETED 2025-10-10
+**Outcome:**
+- Implemented 2 temperature variability indices
+- No baseline updates needed (all fixed thresholds) ✅
+- CF-compliant metadata ✅
+- Tested with 2023 data ✅
+- Climate stability and ANUCLIM BIO4 variable now available
 
-### Priority 5: Phase 10 - Drought Indices (up to 11 indices)
-**Target:** 69 → 80 indices (100% of revised goal!)
+### Priority 5: Phase 10 - Drought Indices (up to 12 indices)
+**Target:** 68 → 80 indices (100% of revised goal!)
 **Time:** 4-8 hours
 **Justification:**
 - High complexity (statistical methods)
 - High drought monitoring value
 - SPI-3, SPI-6, SPI-12 are most critical
-- May implement multiple SPI windows and other drought metrics
+- May implement multiple SPI windows (1, 3, 6, 12, 24 months)
+- Possible additional drought metrics: consecutive_dry_days_variability, etc.
 
 ---
 
-## Next Action: Phase 9 - Temperature Variability OR Phase 10 - Drought Indices
+## Next Action: Phase 10 - Drought Indices (Final Push to 80!)
 
-### Option A: Phase 9 - Temperature Variability (Quick Win)
-**Estimated Implementation Time:** 1-2 hours
-**Files to Modify:**
-- `temperature_pipeline.py` (add 1-3 indices)
-- `README.md` (update count: 66 → 69)
-- `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
-- No baseline updates needed ✅
-
-**Indices to Implement:**
-1. `temperature_seasonality` - Coefficient of variation of monthly temperatures
-2. `extreme_heat_wave_days` - Days in extreme heat waves (fixed threshold)
-
-**After Phase 9:**
-- Progress: 69/80 indices (86.25%)
-- Remaining: 11 indices (final push)
-- Estimated time to 80 indices: 4-8 hours
-
-### Option B: Phase 10 - Drought Indices (High-Value, Higher Complexity)
+### Phase 10: Drought Indices (High-Value Implementation)
 **Estimated Implementation Time:** 4-8 hours
-**Files to Modify:**
-- Create new `drought_pipeline.py` (add 3-11 indices)
-- `README.md` (update count: 66 → 77-80)
+**Files to Create/Modify:**
+- Create new `drought_pipeline.py` (add 12+ indices)
+- `README.md` (update count: 68 → 80)
 - `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
 - No baseline updates needed (uses internal distribution fitting) ✅
 
-**Priority Indices:**
+**Priority Indices (in order):**
 1. `spi_3` - 3-month Standardized Precipitation Index
 2. `spi_6` - 6-month Standardized Precipitation Index
 3. `spi_12` - 12-month Standardized Precipitation Index
+4. `spi_1` - 1-month SPI (optional)
+5. `spi_24` - 24-month SPI (optional)
+6. `consecutive_dry_days_variability` - Interannual CDD variability
+7. Additional drought metrics as appropriate
 
 **After Phase 10:**
 - Progress: 80/80 indices (100% of achievable goal!) 🎯
 - Complete achievement of data-constrained target
+- Comprehensive drought monitoring capabilities
 
 ---
 
@@ -364,12 +369,21 @@
 - **Phase 6 Complete:** 53/80 indices (66.25%) ✅
 - **Phase 7 Complete:** 61/80 indices (76.25%) ✅
 - **Phase 8 Complete:** 66/80 indices (82.5%) ✅
-- **Next milestone:** Phase 9 (Temperature Variability) → 69 indices (86.25%) OR Phase 10 (Drought) → 80 indices (100%)
+- **Phase 9 Complete:** 68/80 indices (85%) ✅
+- **Next milestone:** Phase 10 (Drought Indices) → 80 indices (100%) 🎯
 - **End of 2025:** 80/80 indices (100% of achievable) 🎯
 - **With additional data:** 100+ indices possible
 
 **Current Limitation:** PRISM data scope (temperature + precipitation + basic humidity)
 **Current Strength:** High-quality, long-term, fine-resolution data for CONUS
+
+**Phase 9 Learnings:**
+- Temperature seasonality (coefficient of variation) is a valuable ANUCLIM BIO4 variable
+- Heat wave index complements existing heat_wave_frequency (total days vs. event count)
+- Both indices use fixed thresholds, maintaining simplicity
+- `temperature_seasonality` found in `xclim.indices` (not `atmos`)
+- ~1 hour implementation time for 2 well-scoped variability indices
+- All temperature indices now complete with available PRISM data
 
 **Phase 8 Learnings:**
 - Agricultural indices provide high practical value for decision-making
