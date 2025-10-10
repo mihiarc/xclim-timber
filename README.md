@@ -6,7 +6,7 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 30+ climate indices including:
+- **Comprehensive Indices**: Calculate 50+ climate indices including:
   - Temperature indices (frost days, tropical nights, growing degree days)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
   - Agricultural indices (growing season length, SPI)
@@ -38,11 +38,11 @@ pip install -r requirements.txt
 
 ### One-Time Setup
 
-**Generate baseline percentiles for extreme indices** (required for temperature and precipitation pipelines):
+**Generate baseline percentiles for extreme indices** (required for temperature, precipitation, and multivariate pipelines):
 ```bash
 python calculate_baseline_percentiles.py
 ```
-This is a one-time operation (15-25 minutes) that calculates day-of-year percentiles from 1981-2000 baseline period for both temperature and precipitation extremes. The results are cached as `data/baselines/baseline_percentiles_1981_2000.nc` (5.8GB) for all future runs.
+This is a one-time operation (~20-30 minutes) that calculates day-of-year percentiles from 1981-2000 baseline period for temperature extremes, precipitation extremes, and multivariate thresholds. The results are cached as `data/baselines/baseline_percentiles_1981_2000.nc` (10.7GB) for all future runs.
 
 ### Running the Pipelines
 
@@ -64,6 +64,11 @@ python humidity_pipeline.py
 4. **Run human comfort pipeline** (3 indices):
 ```bash
 python human_comfort_pipeline.py
+```
+
+5. **Run multivariate pipeline** (4 indices):
+```bash
+python multivariate_pipeline.py
 ```
 
 All pipelines default to processing 1981-2024 data period. Use `--start-year` and `--end-year` to customize:
@@ -154,7 +159,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **46 validated climate indices** (25 temperature + 10 precipitation + 8 humidity + 3 human comfort) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **50 validated climate indices** (25 temperature + 10 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -259,9 +264,19 @@ The pipeline processes these core climate variables:
 **Humidity Validation:**
 - `relative_humidity`: Relative humidity calculated from dewpoint temperature (QC metric)
 
+### Multivariate Indices (4 indices - Currently Implemented)
+
+**Compound Climate Extremes - Uses 1981-2000 Baseline:**
+- `cold_and_dry_days`: Days with temperature below 25th percentile AND precipitation below 25th percentile (compound drought conditions)
+- `cold_and_wet_days`: Days with temperature below 25th percentile AND precipitation above 75th percentile (flooding risk, winter storms)
+- `warm_and_dry_days`: Days with temperature above 75th percentile AND precipitation below 25th percentile (drought/fire weather)
+- `warm_and_wet_days`: Days with temperature above 75th percentile AND precipitation above 75th percentile (compound extreme events)
+
+**Scientific Context:** These multivariate indices capture compound climate extremes that result from the interaction of multiple climate variables. They are increasingly important for climate change impact assessment, as compound events often have disproportionate impacts compared to single-variable extremes.
+
 ---
 
-## Planned Future Indices (38 additional indices toward 84 goal)
+## Planned Future Indices (34 additional indices toward 84 goal)
 
 The following index categories are planned for future implementation:
 
@@ -271,14 +286,6 @@ The following index categories are planned for future implementation:
 - `potential_evapotranspiration`: Potential evapotranspiration (Thornthwaite method)
 - `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET
 - `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
-
-### Multivariate Indices (4 indices - Planned)
-
-**Combined Temperature-Precipitation:**
-- `cold_and_dry_days`: Days with low temperature and low precipitation
-- `cold_and_wet_days`: Days with low temperature and high precipitation
-- `warm_and_dry_days`: Days with high temperature and low precipitation
-- `warm_and_wet_days`: Days with high temperature and high precipitation
 
 ### Agricultural Indices (3 indices - Planned)
 

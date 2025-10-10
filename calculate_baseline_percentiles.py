@@ -19,6 +19,7 @@ from typing import Dict, Optional
 from xclim.core.calendar import percentile_doy
 import warnings
 import dask
+import gc
 
 # Suppress expected warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='All-NaN slice encountered')
@@ -101,7 +102,7 @@ class BaselinePercentileCalculator:
         logger.info(f"Using {n_years} years of baseline data")
 
         # Standardize units for temperature
-        for var in ['tmax', 'tasmax', 'tmin', 'tasmin']:
+        for var in ['tmax', 'tasmax', 'tmin', 'tasmin', 'tmean', 'tas']:
             if var in ds_temp_baseline:
                 data = ds_temp_baseline[var]
                 if 'units' in data.attrs:
@@ -129,6 +130,11 @@ class BaselinePercentileCalculator:
             # Precipitation percentiles (calculated on WET DAYS ONLY: pr ≥ 1mm)
             ('pr95p_threshold', 'pr', 95, "95th percentile of wet day precipitation", 'precipitation', 1.0),
             ('pr99p_threshold', 'pr', 99, "99th percentile of wet day precipitation", 'precipitation', 1.0),
+            # Multivariate indices percentiles (for compound extremes)
+            ('tas_25p_threshold', 'tmean', 25, "25th percentile of daily mean temperature (for cold thresholds)", 'temperature', None),
+            ('tas_75p_threshold', 'tmean', 75, "75th percentile of daily mean temperature (for warm thresholds)", 'temperature', None),
+            ('pr_25p_threshold', 'pr', 25, "25th percentile of wet day precipitation (for dry thresholds)", 'precipitation', 1.0),
+            ('pr_75p_threshold', 'pr', 75, "75th percentile of wet day precipitation (for wet thresholds)", 'precipitation', 1.0),
         ]
 
         results = {}
@@ -137,7 +143,7 @@ class BaselinePercentileCalculator:
             # Select the appropriate dataset
             if data_type == 'temperature':
                 ds_baseline = ds_temp_baseline
-                alt_names = {'tmax': 'tasmax', 'tmin': 'tasmin'}
+                alt_names = {'tmax': 'tasmax', 'tmin': 'tasmin', 'tmean': 'tas'}
             elif data_type == 'precipitation':
                 if ds_precip_baseline is None:
                     logger.warning(f"Skipping {name}: precipitation data not provided")
@@ -170,8 +176,8 @@ class BaselinePercentileCalculator:
                 logger.info(f"  Wet days: {wet_days:,} / {total_days:,} ({100*wet_days/total_days:.1f}%)")
 
             # Optimize chunking for percentile calculation
-            # Load time dimension fully but chunk spatially
-            data_rechunked = data.chunk({'time': -1, 'lat': 100, 'lon': 100})
+            # Load time dimension fully but chunk spatially (smaller chunks for memory efficiency with 10 percentiles)
+            data_rechunked = data.chunk({'time': -1, 'lat': 50, 'lon': 50})
 
             # Calculate day-of-year percentiles
             # Window of 5 days is standard for climate extremes
@@ -210,6 +216,10 @@ class BaselinePercentileCalculator:
                 mean_threshold = float(np.mean(valid_data))
                 logger.info(f"  Mean threshold: {mean_threshold:.2f} {doy_percentile.attrs.get('units', '')}")
             logger.info(f"  Shape: {doy_percentile.shape} (should be 3D: lat × lon × dayofyear)")
+
+            # Clean up intermediate data to free memory before next percentile
+            del data, data_rechunked
+            gc.collect()
 
         # Save if requested
         if save_path:
@@ -296,10 +306,11 @@ def main():
     print(f"\nThis will calculate day-of-year percentiles using the")
     print(f"baseline period 1981-2000 (20 years of data).")
     print(f"\nCalculating percentiles for:")
-    print(f"  • Temperature: 4 percentiles (tx90p, tx10p, tn90p, tn10p)")
-    print(f"  • Precipitation: 2 percentiles (pr95p, pr99p on wet days only)")
-    print(f"\n⚠️  This is a one-time calculation that may take 15-25 minutes.")
+    print(f"  • Temperature: 6 percentiles (tx90p, tx10p, tn90p, tn10p, tas25p, tas75p)")
+    print(f"  • Precipitation: 4 percentiles (pr95p, pr99p, pr25p, pr75p on wet days only)")
+    print(f"\n⚠️  This is a one-time calculation that may take 25-35 minutes.")
     print(f"   The results will be saved and reused for all future processing.")
+    print(f"   Using smaller chunks (50x50) for memory efficiency.")
     print("\n" + "-"*70)
 
     try:
