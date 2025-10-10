@@ -6,10 +6,10 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 61+ climate indices including:
+- **Comprehensive Indices**: Calculate 66+ climate indices including:
   - Temperature indices (frost days, tropical nights, growing degree days)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
-  - Agricultural indices (growing season length, SPI)
+  - Agricultural indices (growing season length, PET, corn heat units)
   - Extreme event indices (heat waves, cold spells)
 - **Data Quality Control**: Automatic outlier detection and missing value handling
 - **CF Compliance**: Outputs follow Climate and Forecast (CF) conventions
@@ -69,6 +69,11 @@ python human_comfort_pipeline.py
 5. **Run multivariate pipeline** (4 indices):
 ```bash
 python multivariate_pipeline.py
+```
+
+6. **Run agricultural pipeline** (5 indices - Phase 8):
+```bash
+python agricultural_pipeline.py
 ```
 
 All pipelines default to processing 1981-2024 data period. Use `--start-year` and `--end-year` to customize:
@@ -159,7 +164,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **61 validated climate indices** (33 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **66 validated climate indices** (33 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate + 5 agricultural) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -289,25 +294,39 @@ The pipeline processes these core climate variables:
 
 **Scientific Context:** These multivariate indices capture compound climate extremes that result from the interaction of multiple climate variables. They are increasingly important for climate change impact assessment, as compound events often have disproportionate impacts compared to single-variable extremes.
 
+### Agricultural Indices (5 indices - Currently Implemented, Phase 8 Complete)
+
+**Growing Season Analysis (1):**
+- `growing_season_length`: Total days between first and last occurrence of 6+ consecutive days with temperature above 5°C (ETCCDI standard)
+
+**Water Balance (1):**
+- `potential_evapotranspiration`: Annual potential evapotranspiration using Baier-Robertson 1965 method (temperature-only, suitable for regions without wind/radiation data)
+
+**Crop-Specific Indices (1):**
+- `corn_heat_units`: Annual accumulated corn heat units for crop development and maturity prediction (USDA standard, widely used in North American agriculture)
+
+**Spring Thaw Monitoring (1):**
+- `thawing_degree_days`: Sum of degree-days above 0°C (permafrost monitoring, spring melt timing, critical for northern latitudes)
+
+**Growing Season Water Availability (1):**
+- `growing_season_precipitation`: Total precipitation during growing season (April-October, northern hemisphere)
+
+**Agricultural Value:** These indices support agricultural decision-making including crop variety selection, planting timing, irrigation scheduling, and harvest planning. They are particularly valuable for adapting to climate change impacts on agriculture.
+
 ---
 
-## Planned Future Indices (19 additional indices toward 80 goal)
+## Planned Future Indices (14 additional indices toward 80 goal)
 
 The following index categories are planned for future implementation:
 
-### Evapotranspiration Indices (3 indices - Planned)
+### Drought & Water Balance Indices (3 indices - Planned)
 
-**Water Balance Calculations:**
-- `potential_evapotranspiration`: Potential evapotranspiration (Thornthwaite method)
-- `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET
+**Advanced Water Balance:**
+- `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET (requires wind and solar radiation data)
+- `spi_3`: 3-month Standardized Precipitation Index (drought monitoring)
 - `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
 
-### Agricultural Indices (3 indices - Planned)
-
-**Specialized Agricultural Metrics:**
-- `gsl`: Growing season length (period suitable for plant growth)
-- `spi`: Standardized Precipitation Index (drought monitoring, 3-month window)
-- `spei`: Standardized Precipitation Evapotranspiration Index (requires additional variables)
+**Note:** SPI and SPEI require statistical distribution fitting and longer processing time
 
 ---
 

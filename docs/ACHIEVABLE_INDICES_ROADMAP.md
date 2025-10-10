@@ -1,8 +1,8 @@
 # Achievable Indices Roadmap (Data-Constrained)
 
-**Last Updated:** 2025-10-10 (Post Phase 7)
-**Current Progress:** 61/80 indices (76.25%)
-**Remaining Achievable:** 19 indices
+**Last Updated:** 2025-10-10 (Post Phase 8)
+**Current Progress:** 66/80 indices (82.5%)
+**Remaining Achievable:** 14 indices
 
 ---
 
@@ -21,7 +21,7 @@
 
 ---
 
-## Currently Implemented (61 indices)
+## Currently Implemented (66 indices)
 
 ### Temperature Pipeline (33 indices) ✅ Phase 7 Complete
 **Basic Statistics (5):**
@@ -65,9 +65,25 @@
 ### Multivariate Pipeline (4 indices) ✅
 - cold_and_dry_days, cold_and_wet_days, warm_and_dry_days, warm_and_wet_days
 
+### Agricultural Pipeline (5 indices) ✅ Phase 8 Complete
+**Growing Season (1):**
+- growing_season_length
+
+**Water Balance (1):**
+- potential_evapotranspiration (Baier-Robertson 1965)
+
+**Crop-Specific (1):**
+- corn_heat_units
+
+**Spring Thaw (1):**
+- thawing_degree_days
+
+**Seasonal Precipitation (1):**
+- growing_season_precipitation
+
 ---
 
-## Remaining Achievable Indices (27 estimated)
+## Remaining Achievable Indices (14 estimated)
 
 ### ✅ Phase 6: Enhanced Precipitation Analysis - COMPLETE
 **Status:** COMPLETED 2025-10-10 | **Implemented:** 3 indices
@@ -113,22 +129,27 @@
 
 ---
 
-### 🟡 Phase 8: Growing Season & Agricultural Basics (3-5 indices)
-**Priority:** MEDIUM | **Complexity:** MEDIUM | **Time:** 2-3 hours
+### ✅ Phase 8: Growing Season & Agricultural Basics - COMPLETE
+**Status:** COMPLETED 2025-10-10 | **Implemented:** 5 indices
 
-**Growing Season (3 indices):**
-1. `growing_season_length` - Period with temperature suitable for plant growth
-2. `growing_season_start` - Start date of growing season
-3. `growing_season_end` - End date of growing season
+**Completed Indices:**
+1. ✅ `growing_season_length` - Total days between first and last occurrence of 6+ consecutive days with temperature above 5°C (ETCCDI standard)
+2. ✅ `potential_evapotranspiration` - Annual potential evapotranspiration using Baier-Robertson 1965 method (temperature-only)
+3. ✅ `corn_heat_units` - Annual accumulated corn heat units for crop development (USDA standard)
+4. ✅ `thawing_degree_days` - Sum of degree-days above 0°C (permafrost monitoring, spring melt timing)
+5. ✅ `growing_season_precipitation` - Total precipitation during growing season (April-October)
 
-**Water Balance (2 indices - SIMPLE versions only):**
-4. `potential_evapotranspiration` - Thornthwaite method (temperature only, simplified)
-5. `thawing_degree_days` - TDD > 0°C (permafrost monitoring)
+**Notes:**
+- All indices use fixed thresholds or simple aggregation (no baseline percentiles required) ✅
+- PET uses Baier-Robertson (1965) method - temperature-only, no wind/radiation needed
+- CHU is USDA standard widely used in North American agriculture
+- Growing season start/end were already implemented in Phase 7
+- Created new `agricultural_pipeline.py` for temperature + precipitation integration
+- All indices CF-compliant with comprehensive metadata
 
-**Data Required:** `tmean` or `tmax`/`tmin` ✅
-**Baseline Updates:** None ✅
-
-**Note:** Full PET (Penman-Monteith) requires wind + solar radiation ❌
+**Data Used:** `tas`, `tmax`, `tmin`, `ppt` ✅
+**Baseline Updates:** None required ✅
+**Actual Implementation Time:** ~2 hours
 
 ---
 
@@ -205,14 +226,14 @@
 | **Precipitation** | 13 | +9 | ~5 | Phase 6 complete, missing snow-related only |
 | **Humidity/Comfort** | 11 | +1 | ~2 | Limited by no specific humidity |
 | **Multivariate** | 4 | +0 | ~0 | Core compound events done |
-| **Agricultural** | 0 | +5 | ~6 | Simple growing season only |
+| **Agricultural** | 5 | +0 | ~6 | Phase 8 complete, core agricultural indices done |
 | **Drought** | 0 | +3 | ~2 | SPI possible, SPEI needs more data |
 | **Fire/Wind/Snow** | 0 | +0 | ~40 | All require unavailable data |
-| **TOTAL** | **61** | **+19** | **~60** | **Target: 80 indices** |
+| **TOTAL** | **66** | **+14** | **~60** | **Target: 80 indices** |
 
 **Revised Goal:** 80 indices (down from 84)
-- **Current:** 61 (76.25% of revised goal)
-- **Achievable:** 19 more indices
+- **Current:** 66 (82.5% of revised goal)
+- **Achievable:** 14 more indices
 - **Cannot implement:** ~4 indices from original 84-index goal
 
 **Original 84-index goal breakdown:**
@@ -245,60 +266,72 @@
 - Tested with 2023 data ✅
 - High climate change monitoring and agricultural value achieved
 
-### Priority 3: Phase 8 - Growing Season (3-5 indices)
-**Target:** 61 → 66 indices (82.5% of 80)
-**Time:** 2-3 hours
-**Justification:**
-- Medium complexity
-- High agricultural value
-- Uses simple temperature thresholds
-- No baseline updates needed
+### ✅ Priority 3: Phase 8 - Growing Season & Agricultural (COMPLETE)
+**Target:** 61 → 66 indices (82.5% of 80) ✅ ACHIEVED
+**Time:** ~2 hours (actual)
+**Status:** COMPLETED 2025-10-10
+**Outcome:**
+- Implemented 5 agricultural indices (GSL, PET, CHU, TDD, growing season precip)
+- No baseline updates needed (all fixed thresholds or simple aggregation) ✅
+- CF-compliant metadata ✅
+- Tested with 2023 data ✅
+- High agricultural decision-making value achieved
 
-### Priority 4: Phase 9 - Temperature Variability (3-4 indices)
-**Target:** 66 → 70 indices (87.5% of 80)
-**Time:** 2 hours
+### Priority 4: Phase 9 - Temperature Variability (1-3 indices)
+**Target:** 66 → 69 indices (86.25% of 80)
+**Time:** 1-2 hours
 **Justification:**
 - Low-medium complexity
 - Climate stability metrics
-- Mostly simple calculations
+- Note: `daily_temperature_range_variability` already implemented in Phase 7
+- Remaining: temperature_seasonality, extreme_heat_wave_days
 
-### Priority 5: Phase 10 - Drought Indices (up to 10 indices)
-**Target:** 70 → 80 indices (100% of revised goal!)
+### Priority 5: Phase 10 - Drought Indices (up to 11 indices)
+**Target:** 69 → 80 indices (100% of revised goal!)
 **Time:** 4-8 hours
 **Justification:**
 - High complexity (statistical methods)
 - High drought monitoring value
-- SPI-3 is most critical
+- SPI-3, SPI-6, SPI-12 are most critical
 - May implement multiple SPI windows and other drought metrics
 
 ---
 
-## Next Action: Phase 8 - Growing Season & Agricultural Basics
+## Next Action: Phase 9 - Temperature Variability OR Phase 10 - Drought Indices
 
-**Estimated Implementation Time:** 2-3 hours
+### Option A: Phase 9 - Temperature Variability (Quick Win)
+**Estimated Implementation Time:** 1-2 hours
 **Files to Modify:**
-- `temperature_pipeline.py` or new `agricultural_pipeline.py` (add 3-5 indices)
-- `README.md` (update count: 61 → 66)
+- `temperature_pipeline.py` (add 1-3 indices)
+- `README.md` (update count: 66 → 69)
 - `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
 - No baseline updates needed ✅
 
 **Indices to Implement:**
-1. `growing_season_length` - Period with temperature suitable for plant growth
-2. `potential_evapotranspiration` - Thornthwaite method (temperature only)
-3. `thawing_degree_days` - TDD > 0°C (permafrost monitoring)
+1. `temperature_seasonality` - Coefficient of variation of monthly temperatures
+2. `extreme_heat_wave_days` - Days in extreme heat waves (fixed threshold)
 
-**Note:** Growing season start/end already implemented in Phase 7, so focus on length and water balance indices
+**After Phase 9:**
+- Progress: 69/80 indices (86.25%)
+- Remaining: 11 indices (final push)
+- Estimated time to 80 indices: 4-8 hours
 
-**Test Plan:**
-1. Run with 2023 data (single year validation)
-2. Verify all new indices calculate correctly
-3. Check CF-compliance of metadata
-4. Validate against agricultural standards
+### Option B: Phase 10 - Drought Indices (High-Value, Higher Complexity)
+**Estimated Implementation Time:** 4-8 hours
+**Files to Modify:**
+- Create new `drought_pipeline.py` (add 3-11 indices)
+- `README.md` (update count: 66 → 77-80)
+- `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
+- No baseline updates needed (uses internal distribution fitting) ✅
 
-**After Phase 8:**
-- Progress: 66/80 indices (82.5%)
-- Remaining: 14 indices across 2 phases
-- Estimated total time to 80 indices: 6-14 hours
+**Priority Indices:**
+1. `spi_3` - 3-month Standardized Precipitation Index
+2. `spi_6` - 6-month Standardized Precipitation Index
+3. `spi_12` - 12-month Standardized Precipitation Index
+
+**After Phase 10:**
+- Progress: 80/80 indices (100% of achievable goal!) 🎯
+- Complete achievement of data-constrained target
 
 ---
 
@@ -330,12 +363,21 @@
 **Realistic Goals:**
 - **Phase 6 Complete:** 53/80 indices (66.25%) ✅
 - **Phase 7 Complete:** 61/80 indices (76.25%) ✅
-- **Next milestone:** Phase 8 (Growing Season & Agricultural) → 66 indices (82.5%)
-- **End of 2025:** 80/80 indices (100% of achievable)
+- **Phase 8 Complete:** 66/80 indices (82.5%) ✅
+- **Next milestone:** Phase 9 (Temperature Variability) → 69 indices (86.25%) OR Phase 10 (Drought) → 80 indices (100%)
+- **End of 2025:** 80/80 indices (100% of achievable) 🎯
 - **With additional data:** 100+ indices possible
 
 **Current Limitation:** PRISM data scope (temperature + precipitation + basic humidity)
 **Current Strength:** High-quality, long-term, fine-resolution data for CONUS
+
+**Phase 8 Learnings:**
+- Agricultural indices provide high practical value for decision-making
+- Baier-Robertson PET method works well with temperature-only data
+- Corn Heat Units valuable for North American agriculture (USDA standard)
+- Growing season precipitation simple but effective for water availability assessment
+- Created separate agricultural_pipeline.py for temperature + precipitation integration
+- ~2 hours implementation time for 5 agricultural indices
 
 **Phase 7 Learnings:**
 - Fixed-threshold spell frequency indices (cold spell, hot spell, heat wave) complement existing duration indices
