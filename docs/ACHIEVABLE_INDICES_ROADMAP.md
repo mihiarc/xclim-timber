@@ -1,8 +1,8 @@
 # Achievable Indices Roadmap (Data-Constrained)
 
-**Last Updated:** 2025-10-10 (Post Phase 9)
-**Current Progress:** 68/80 indices (85%)
-**Remaining Achievable:** 12 indices
+**Last Updated:** 2025-10-10 (Post Phase 10)
+**Current Progress:** 77/80 indices (96.25%)
+**Remaining Achievable:** 3 indices
 
 ---
 
@@ -21,7 +21,7 @@
 
 ---
 
-## Currently Implemented (68 indices)
+## Currently Implemented (77 indices)
 
 ### Temperature Pipeline (35 indices) ✅ Phase 9 Complete
 **Basic Statistics (5):**
@@ -86,6 +86,16 @@
 
 **Seasonal Precipitation (1):**
 - growing_season_precipitation
+
+### Drought Pipeline (9 indices) ✅ Phase 10 Complete
+**Standardized Precipitation Index - SPI (5 windows):**
+- spi_1month, spi_3month, spi_6month, spi_12month, spi_24month
+
+**Dry Spell Analysis (2):**
+- cdd (maximum consecutive dry days), dry_days (total dry days count)
+
+**Precipitation Intensity (2):**
+- sdii (simple daily intensity index), fraction_heavy_precip (heavy precipitation fraction)
 
 ---
 
@@ -179,18 +189,33 @@
 
 ---
 
-### 🔴 Phase 10: Specialized Drought Indices (2-3 indices)
-**Priority:** LOW | **Complexity:** HIGH | **Time:** 4-6 hours
+### ✅ Phase 10: Drought Indices - COMPLETE
+**Status:** COMPLETED 2025-10-10 | **Implemented:** 9 indices
 
-1. `standardized_precipitation_index (SPI-3)` - Requires statistical distribution fitting (scipy.stats)
-2. `standardized_precipitation_index (SPI-6)` - 6-month window
-3. `consecutive_dry_days_variability` - Interannual variability of CDD
+**Completed Indices:**
+1. ✅ `spi_1month` - 1-month Standardized Precipitation Index (short-term agricultural drought)
+2. ✅ `spi_3month` - 3-month SPI (seasonal agricultural drought - most common)
+3. ✅ `spi_6month` - 6-month SPI (medium-term agricultural/hydrological drought)
+4. ✅ `spi_12month` - 12-month SPI (long-term hydrological drought)
+5. ✅ `spi_24month` - 24-month SPI (multi-year persistent drought)
+6. ✅ `cdd` - Maximum consecutive dry days (ETCCDI standard)
+7. ✅ `dry_days` - Total number of dry days per year
+8. ✅ `sdii` - Simple daily intensity index (ETCCDI standard)
+9. ✅ `fraction_heavy_precip` - Fraction of annual precipitation from heavy events (>75th percentile)
 
-**Data Required:** `ppt` ✅
-**Technical Complexity:** Requires gamma distribution fitting, statistical methods
-**Baseline Updates:** May need long-term statistics
+**Notes:**
+- All SPI indices use gamma distribution fitting (McKee et al. 1993 standard) ✅
+- 30-year calibration period (1981-2010) following WMO recommendations ✅
+- Scipy statistical methods successfully integrated ✅
+- Threaded scheduler used (distributed client has serialization issues with large SPI task graphs)
+- All indices CF-compliant with comprehensive metadata
+- 3 indices deferred due to unit compatibility issues in xclim (dry_spell_frequency, dry_spell_total_length, max_7day_pr_intensity)
 
-**Note:** Full SPEI requires PET which needs wind+solar ❌
+**Data Used:** `pr` (precipitation) ✅
+**Baseline Updates:** Uses pr_75p_threshold from existing baseline file ✅
+**Actual Implementation Time:** ~4 hours
+
+**Note:** Full SPEI requires PET which needs wind+solar ❌ (PRISM lacks these variables)
 
 ---
 
@@ -241,13 +266,13 @@
 | **Humidity/Comfort** | 11 | +0 | ~2 | Complete with available data |
 | **Multivariate** | 4 | +0 | ~0 | Core compound events done |
 | **Agricultural** | 5 | +0 | ~6 | Phase 8 complete, core agricultural indices done |
-| **Drought** | 0 | +12 | ~2 | SPI possible (multiple windows), SPEI needs more data |
+| **Drought** | 9 | +3 | ~2 | Phase 10 complete, SPI at 5 windows + core dry spell metrics |
 | **Fire/Wind/Snow** | 0 | +0 | ~40 | All require unavailable data |
-| **TOTAL** | **68** | **+12** | **~60** | **Target: 80 indices** |
+| **TOTAL** | **77** | **+3** | **~60** | **Target: 80 indices (96.25% achieved!)** |
 
 **Revised Goal:** 80 indices (down from 84)
-- **Current:** 68 (85% of revised goal)
-- **Achievable:** 12 more indices (drought focus)
+- **Current:** 77 (96.25% of revised goal) 🎯
+- **Achievable:** 3 more indices (unit compatibility fixes)
 - **Cannot implement:** ~4 indices from original 84-index goal
 
 **Original 84-index goal breakdown:**
@@ -302,41 +327,44 @@
 - Tested with 2023 data ✅
 - Climate stability and ANUCLIM BIO4 variable now available
 
-### Priority 5: Phase 10 - Drought Indices (up to 12 indices)
-**Target:** 68 → 80 indices (100% of revised goal!)
-**Time:** 4-8 hours
-**Justification:**
-- High complexity (statistical methods)
-- High drought monitoring value
-- SPI-3, SPI-6, SPI-12 are most critical
-- May implement multiple SPI windows (1, 3, 6, 12, 24 months)
-- Possible additional drought metrics: consecutive_dry_days_variability, etc.
+### ✅ Priority 5: Phase 10 - Drought Indices (COMPLETE)
+**Target:** 68 → 77 indices (96.25% of revised goal!) ✅ ACHIEVED
+**Time:** ~4 hours (actual)
+**Status:** COMPLETED 2025-10-10
+**Outcome:**
+- Implemented 9 comprehensive drought indices
+- SPI at 5 time windows (1, 3, 6, 12, 24 months) using gamma distribution ✅
+- Core dry spell and intensity metrics ✅
+- 30-year calibration (1981-2010) following WMO standards ✅
+- CF-compliant metadata ✅
+- High drought monitoring value achieved (gold standard SPI methodology)
 
 ---
 
-## Next Action: Phase 10 - Drought Indices (Final Push to 80!)
+## Next Actions: Final 3 Indices (Optional Enhancement)
 
-### Phase 10: Drought Indices (High-Value Implementation)
-**Estimated Implementation Time:** 4-8 hours
-**Files to Create/Modify:**
-- Create new `drought_pipeline.py` (add 12+ indices)
-- `README.md` (update count: 68 → 80)
-- `docs/ACHIEVABLE_INDICES_ROADMAP.md` (this file)
-- No baseline updates needed (uses internal distribution fitting) ✅
+### Remaining Achievable Indices (3 indices)
+**Target:** 77 → 80 indices (100% of revised goal)
+**Priority:** LOW | **Complexity:** MEDIUM | **Time:** 1-2 hours
 
-**Priority Indices (in order):**
-1. `spi_3` - 3-month Standardized Precipitation Index
-2. `spi_6` - 6-month Standardized Precipitation Index
-3. `spi_12` - 12-month Standardized Precipitation Index
-4. `spi_1` - 1-month SPI (optional)
-5. `spi_24` - 24-month SPI (optional)
-6. `consecutive_dry_days_variability` - Interannual CDD variability
-7. Additional drought metrics as appropriate
+**Indices with Unit Compatibility Issues (deferred):**
+1. `dry_spell_frequency` - Number of distinct dry spell events (xclim unit compatibility issue)
+2. `dry_spell_total_length` - Total days in all dry spells per year (xclim unit compatibility issue)
+3. `max_7day_pr_intensity` - Maximum 7-day precipitation intensity (xclim unit conversion issue)
 
-**After Phase 10:**
-- Progress: 80/80 indices (100% of achievable goal!) 🎯
-- Complete achievement of data-constrained target
-- Comprehensive drought monitoring capabilities
+**Resolution Path:**
+- Wait for xclim library updates to fix unit handling
+- Or implement custom workarounds for unit conversion
+- Current drought coverage (9 indices) is comprehensive without these
+
+**Current Status:**
+- **77/80 indices (96.25% complete)** 🎯
+- All major climate monitoring capabilities achieved
+- Drought monitoring: ✅ Industry-standard SPI at 5 windows
+- Temperature: ✅ Complete with available data (35 indices)
+- Agricultural: ✅ Complete growing season & crop indices (5 indices)
+- Precipitation: ✅ ETCCDI standards met (13 indices)
+- Multivariate: ✅ Compound extremes covered (4 indices)
 
 ---
 
@@ -370,12 +398,23 @@
 - **Phase 7 Complete:** 61/80 indices (76.25%) ✅
 - **Phase 8 Complete:** 66/80 indices (82.5%) ✅
 - **Phase 9 Complete:** 68/80 indices (85%) ✅
-- **Next milestone:** Phase 10 (Drought Indices) → 80 indices (100%) 🎯
-- **End of 2025:** 80/80 indices (100% of achievable) 🎯
+- **Phase 10 Complete:** 77/80 indices (96.25%) ✅ 🎯
+- **Remaining:** 3 indices (unit compatibility fixes - optional)
+- **Current Status:** Near-complete achievement of data-constrained target! 🎉
 - **With additional data:** 100+ indices possible
 
 **Current Limitation:** PRISM data scope (temperature + precipitation + basic humidity)
 **Current Strength:** High-quality, long-term, fine-resolution data for CONUS
+
+**Phase 10 Learnings:**
+- SPI calculation requires full 30-year calibration period (1981-2010) to work properly
+- Gamma distribution fitting (McKee et al. 1993) successfully implemented using scipy
+- Multiple SPI windows (1, 3, 6, 12, 24 months) provide comprehensive drought monitoring
+- Distributed Dask client has serialization issues with large SPI task graphs → use threaded scheduler
+- SPI computation intensive: ~5-10 minutes for 43 years of daily data at PRISM resolution
+- 3 indices deferred due to xclim unit compatibility issues (can be added when library fixes these)
+- ~4 hours implementation time for 9 drought indices (96.25% of 80-index goal achieved!)
+- SPI is the gold standard for drought monitoring - high scientific value
 
 **Phase 9 Learnings:**
 - Temperature seasonality (coefficient of variation) is a valuable ANUCLIM BIO4 variable

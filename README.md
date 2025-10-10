@@ -6,10 +6,11 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 68+ climate indices including:
+- **Comprehensive Indices**: Calculate 77+ climate indices including:
   - Temperature indices (frost days, tropical nights, growing degree days, temperature variability)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
   - Agricultural indices (growing season length, PET, corn heat units)
+  - Drought indices (SPI at 5 time windows, dry spell metrics)
   - Extreme event indices (heat waves, cold spells, spell frequency)
 - **Data Quality Control**: Automatic outlier detection and missing value handling
 - **CF Compliance**: Outputs follow Climate and Forecast (CF) conventions
@@ -74,6 +75,11 @@ python multivariate_pipeline.py
 6. **Run agricultural pipeline** (5 indices - Phase 8):
 ```bash
 python agricultural_pipeline.py
+```
+
+7. **Run drought pipeline** (9 indices - Phase 10):
+```bash
+python drought_pipeline.py
 ```
 
 All pipelines default to processing 1981-2024 data period. Use `--start-year` and `--end-year` to customize:
@@ -164,7 +170,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **68 validated climate indices** (35 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate + 5 agricultural) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **77 validated climate indices** (35 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate + 5 agricultural + 9 drought) achieving 96% of the 80-index goal. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -317,22 +323,39 @@ The pipeline processes these core climate variables:
 
 **Agricultural Value:** These indices support agricultural decision-making including crop variety selection, planting timing, irrigation scheduling, and harvest planning. They are particularly valuable for adapting to climate change impacts on agriculture.
 
+### Drought Indices (9 indices - Currently Implemented, Phase 10 Complete)
+
+**Standardized Precipitation Index (5 windows):**
+- `spi_1month`: 1-month SPI for short-term agricultural drought monitoring
+- `spi_3month`: 3-month SPI for seasonal agricultural drought (most common)
+- `spi_6month`: 6-month SPI for medium-term agricultural/hydrological drought
+- `spi_12month`: 12-month SPI for long-term hydrological drought monitoring
+- `spi_24month`: 24-month SPI for multi-year persistent drought conditions
+
+**Dry Spell Analysis (2 indices):**
+- `cdd`: Maximum consecutive dry days (< 1mm precipitation) - ETCCDI standard
+- `dry_days`: Total number of dry days per year (< 1mm precipitation threshold)
+
+**Precipitation Intensity (2 indices):**
+- `sdii`: Simple daily intensity index - average precipitation on wet days (ETCCDI standard)
+- `fraction_heavy_precip`: Fraction of annual precipitation from heavy events (> 75th percentile)
+
+**Drought Monitoring Value:** SPI is the gold standard for drought monitoring following McKee et al. (1993) methodology. Multiple time windows enable detection of agricultural (1-6 months), hydrological (6-12 months), and long-term persistent (12-24 months) drought conditions. All SPI calculations use 30-year calibration period (1981-2010) with gamma distribution fitting.
+
 ---
 
-## Planned Future Indices (12 additional indices toward 80 goal)
+## Planned Future Indices (3 additional indices toward 80 goal)
 
-The following index categories are planned for future implementation:
+The following indices could be added to reach the 80-index goal:
 
-### Drought & Water Balance Indices (11+ indices - Planned Phase 10)
+### Additional Drought Metrics (3 indices - Future)
 
-**Advanced Drought Monitoring:**
-- `spi_3`: 3-month Standardized Precipitation Index (drought monitoring)
-- `spi_6`: 6-month Standardized Precipitation Index
-- `spi_12`: 12-month Standardized Precipitation Index
-- `consecutive_dry_days_variability`: Interannual variability of CDD
-- Additional SPI windows and drought metrics
+**Potential Additions:**
+- `dry_spell_frequency`: Number of distinct dry spell events (6+ consecutive dry days)
+- `dry_spell_total_length`: Total days in all dry spells per year
+- `max_7day_pr_intensity`: Maximum precipitation over any 7-day period
 
-**Note:** SPI requires statistical distribution fitting (gamma distribution) and longer processing time. SPEI requires PET which needs wind and solar radiation data (not available in PRISM).
+**Note:** These indices have unit compatibility challenges in current xclim version and are deferred to future updates. Current drought coverage (9 indices) provides comprehensive monitoring capability.
 
 ---
 
