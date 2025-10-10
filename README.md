@@ -6,7 +6,7 @@ A robust Python pipeline for processing climate raster data and calculating clim
 
 - **Multi-format Support**: Load climate data from GeoTIFF and NetCDF files
 - **Parallel Processing**: Leverages Dask for efficient processing of large datasets
-- **Comprehensive Indices**: Calculate 50+ climate indices including:
+- **Comprehensive Indices**: Calculate 53+ climate indices including:
   - Temperature indices (frost days, tropical nights, growing degree days)
   - Precipitation indices (consecutive dry/wet days, extreme precipitation)
   - Agricultural indices (growing season length, SPI)
@@ -51,7 +51,7 @@ This is a one-time operation (~20-30 minutes) that calculates day-of-year percen
 python temperature_pipeline.py
 ```
 
-2. **Run precipitation pipeline** (10 indices):
+2. **Run precipitation pipeline** (13 indices - Phase 6):
 ```bash
 python precipitation_pipeline.py
 ```
@@ -159,7 +159,7 @@ calculator.save_indices('outputs/indices.nc')
 
 ## Climate Indices
 
-This pipeline currently implements **50 validated climate indices** (25 temperature + 10 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 84 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
+This pipeline currently implements **53 validated climate indices** (25 temperature + 13 precipitation + 8 humidity + 3 human comfort + 4 multivariate) with a goal of 80 total indices. All indices follow World Meteorological Organization (WMO) standards and CF (Climate and Forecast) conventions using the xclim library.
 
 ### Underlying Climate Variables
 
@@ -221,7 +221,7 @@ The pipeline processes these core climate variables:
 - `warm_spell_duration_index`: Warm spell duration (≥6 consecutive warm days)
 - `cold_spell_duration_index`: Cold spell duration (≥6 consecutive cold days)
 
-### Precipitation Indices (10 indices - Currently Implemented)
+### Precipitation Indices (13 indices - Currently Implemented, Phase 6 Complete)
 
 **Basic Statistics (4):**
 - `prcptot`: Total annual precipitation (wet days ≥ 1mm)
@@ -240,6 +240,11 @@ The pipeline processes these core climate variables:
 **Fixed Threshold Indices (2):**
 - `r10mm`: Heavy precipitation days (≥ 10mm)
 - `r20mm`: Very heavy precipitation days (≥ 20mm)
+
+**Enhanced Precipitation Analysis (3) - Phase 6:**
+- `dry_days`: Total number of dry days (< 1mm)
+- `wetdays`: Total number of wet days (≥ 1mm)
+- `wetdays_prop`: Proportion of days that are wet
 
 ### Humidity Indices (8 indices - Currently Implemented)
 
@@ -276,7 +281,7 @@ The pipeline processes these core climate variables:
 
 ---
 
-## Planned Future Indices (34 additional indices toward 84 goal)
+## Planned Future Indices (27 additional indices toward 80 goal)
 
 The following index categories are planned for future implementation:
 

@@ -2,7 +2,7 @@
 """
 Precipitation indices pipeline for xclim-timber.
 Efficiently processes precipitation-based climate indices using Zarr streaming.
-Calculates 6 precipitation indices including extremes, consecutive events, and intensity.
+Calculates 13 precipitation indices including extremes, consecutive events, intensity, and enhanced analysis (Phase 6).
 """
 
 import argparse
@@ -39,12 +39,13 @@ logger = logging.getLogger(__name__)
 class PrecipitationPipeline:
     """
     Memory-efficient precipitation indices pipeline using Zarr streaming.
-    Processes 10 precipitation indices without loading full dataset into memory.
+    Processes 13 precipitation indices without loading full dataset into memory.
 
     Indices:
     - Basic: prcptot, rx1day, rx5day, sdii, cdd, cwd (6 indices)
     - Extreme (percentile-based): r95p, r99p (2 indices)
     - Threshold: r10mm, r20mm (2 indices)
+    - Enhanced (Phase 6): dry_days, wetdays, wetdays_prop (3 indices)
     """
 
     def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
@@ -278,6 +279,56 @@ The file should contain both temperature and precipitation percentiles.
 
         return indices
 
+    def calculate_enhanced_precipitation_indices(self, ds: xr.Dataset) -> dict:
+        """
+        Calculate enhanced precipitation analysis indices (Phase 6).
+
+        Adds 3 new distinct indices complementing the existing 10:
+        - dry_days: Total number of dry days (< 1mm)
+        - wetdays: Total number of wet days (>= 1mm)
+        - wetdays_prop: Proportion of days that are wet
+
+        Note: Spell frequency indices would require custom temporal logic
+        beyond standard xclim functions and are deferred to future phases.
+
+        Args:
+            ds: Dataset with precipitation variable (pr)
+
+        Returns:
+            Dictionary of calculated enhanced precipitation indices
+        """
+        indices = {}
+
+        if 'pr' not in ds:
+            logger.warning("No precipitation variable found for enhanced precipitation indices")
+            return indices
+
+        # dry_days: Total number of dry days (pr < 1mm)
+        logger.info("  - Calculating dry_days (total dry days < 1mm)...")
+        indices['dry_days'] = atmos.dry_days(
+            pr=ds.pr,
+            thresh='1 mm/day',
+            freq='YS'
+        )
+
+        # wetdays: Total number of wet days (pr >= 1mm)
+        logger.info("  - Calculating wetdays (total wet days >= 1mm)...")
+        indices['wetdays'] = atmos.wetdays(
+            pr=ds.pr,
+            thresh='1 mm/day',
+            freq='YS'
+        )
+
+        # wetdays_prop: Proportion of wet days
+        logger.info("  - Calculating wetdays_prop (proportion of wet days)...")
+        indices['wetdays_prop'] = atmos.wetdays_prop(
+            pr=ds.pr,
+            thresh='1 mm/day',
+            freq='YS'
+        )
+
+        return indices
+
 
     def process_time_chunk(
         self,
@@ -342,10 +393,18 @@ The file should contain both temperature and precipitation percentiles.
         # Calculate threshold indices
         threshold_indices = self.calculate_threshold_indices(combined_ds)
 
+        # Calculate Phase 6 indices - Enhanced Precipitation Analysis
+        enhanced_indices = self.calculate_enhanced_precipitation_indices(combined_ds)
+
         # Merge all indices
-        all_indices = {**basic_indices, **extreme_indices, **threshold_indices}
+        all_indices = {
+            **basic_indices,
+            **extreme_indices,
+            **threshold_indices,
+            **enhanced_indices
+        }
         logger.info(f"  Calculated {len(all_indices)} precipitation indices total")
-        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Threshold: {len(threshold_indices)}")
+        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Threshold: {len(threshold_indices)}, Enhanced (Phase 6): {len(enhanced_indices)}")
 
         if not all_indices:
             logger.warning("No indices calculated")
@@ -357,11 +416,12 @@ The file should contain both temperature and precipitation percentiles.
 
         # Add metadata
         result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber precipitation pipeline v3.0'
+        result_ds.attrs['software'] = 'xclim-timber precipitation pipeline v4.0 (Phase 6)'
         result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         result_ds.attrs['indices_count'] = len(all_indices)
         result_ds.attrs['baseline_period'] = '1981-2000'
-        result_ds.attrs['note'] = 'Extreme indices (r95p, r99p) use wet-day percentiles from baseline period'
+        result_ds.attrs['phase'] = 'Phase 6: Enhanced Precipitation Analysis (+3 indices)'
+        result_ds.attrs['note'] = 'Extreme indices (r95p, r99p) use wet-day percentiles from baseline period. Phase 6 adds dry_days, wetdays, wetdays_prop.'
 
         # Save output
         output_file = output_dir / f'precipitation_indices_{start_year}_{end_year}.nc'
@@ -464,13 +524,14 @@ The file should contain both temperature and precipitation percentiles.
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Precipitation Indices Pipeline: Calculate 10 precipitation-based climate indices",
+        description="Precipitation Indices Pipeline: Calculate 13 precipitation-based climate indices (Phase 6)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Indices calculated:
   Basic (6): prcptot, rx1day, rx5day, sdii, cdd, cwd
   Extreme (2): r95p, r99p (percentile-based using 1981-2000 baseline)
   Threshold (2): r10mm, r20mm (fixed thresholds)
+  Enhanced Phase 6 (3): dry_days, wetdays, wetdays_prop
 
 Examples:
   # Process default period (1981-2024)
