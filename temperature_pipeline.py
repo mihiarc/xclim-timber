@@ -54,22 +54,18 @@ class TemperaturePipeline:
     - Advanced Phase 9 (2): Temperature seasonality, heat wave index
     """
 
-    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False, use_spatial_tiling: bool = False, n_tiles: int = 4, parallel_tiles: bool = False):
+    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False, n_tiles: int = 4):
         """
-        Initialize the pipeline.
+        Initialize the pipeline with parallel spatial tiling.
 
         Args:
             chunk_years: Number of years to process in each temporal chunk (default: 1 for memory efficiency)
             enable_dashboard: Whether to enable Dask dashboard
-            use_spatial_tiling: Whether to use spatial tiling to reduce memory (default: False)
             n_tiles: Number of spatial tiles (2 or 4, default: 4 for quadrants)
-            parallel_tiles: Whether to process tiles in parallel (default: False, requires use_spatial_tiling=True)
         """
         self.chunk_years = chunk_years
         self.enable_dashboard = enable_dashboard
-        self.use_spatial_tiling = use_spatial_tiling
         self.n_tiles = n_tiles
-        self.parallel_tiles = parallel_tiles
         self.client = None
 
         # Zarr store path for temperature data
@@ -584,197 +580,103 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
                 combined_ds[var_name].attrs['units'] = unit
                 combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
 
-        # Calculate indices with optional spatial tiling
-        if self.use_spatial_tiling:
-            tiles = self._get_spatial_tiles(combined_ds)
-            tile_files = []
+        # Process tiles in parallel (always enabled for memory efficiency and performance)
+        logger.info(f"Processing with parallel spatial tiling ({self.n_tiles} tiles)")
 
-            if self.parallel_tiles:
-                # Process tiles in parallel
-                logger.info(f"Processing with spatial tiling ({self.n_tiles} tiles IN PARALLEL)")
+        tiles = self._get_spatial_tiles(combined_ds)
+        tile_files = []
 
-                def process_and_save_tile(tile_info):
-                    lat_slice, lon_slice, tile_name = tile_info
-                    tile_indices = self._process_spatial_tile(combined_ds, lat_slice, lon_slice, tile_name)
+        def process_and_save_tile(tile_info):
+            lat_slice, lon_slice, tile_name = tile_info
+            tile_indices = self._process_spatial_tile(combined_ds, lat_slice, lon_slice, tile_name)
 
-                    # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
-                    tile_ds = xr.Dataset(tile_indices)
-                    tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
-                    logger.info(f"  Saving tile {tile_name} to {tile_file}...")
+            # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
+            tile_ds = xr.Dataset(tile_indices)
+            tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
+            logger.info(f"  Saving tile {tile_name} to {tile_file}...")
 
-                    # Use lock to prevent concurrent NetCDF writes (HDF5 library limitation)
-                    with netcdf_write_lock:
-                        with dask.config.set(scheduler='threads'):
-                            encoding = {}
-                            for var_name in tile_ds.data_vars:
-                                encoding[var_name] = {
-                                    'zlib': True,
-                                    'complevel': 4
-                                }
-                            tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
+            # Use lock to prevent concurrent NetCDF writes (HDF5 library limitation)
+            with netcdf_write_lock:
+                with dask.config.set(scheduler='threads'):
+                    encoding = {}
+                    for var_name in tile_ds.data_vars:
+                        encoding[var_name] = {
+                            'zlib': True,
+                            'complevel': 4
+                        }
+                    tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
 
-                    del tile_indices, tile_ds  # Free memory
-                    return tile_file
+            del tile_indices, tile_ds  # Free memory
+            return tile_file
 
-                # Process all tiles in parallel using ThreadPoolExecutor
-                with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
-                    future_to_tile = {executor.submit(process_and_save_tile, tile): tile for tile in tiles}
-                    for future in as_completed(future_to_tile):
-                        tile_file = future.result()
-                        tile_files.append(tile_file)
+        # Process all tiles in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
+            future_to_tile = {executor.submit(process_and_save_tile, tile): tile for tile in tiles}
+            for future in as_completed(future_to_tile):
+                tile_file = future.result()
+                tile_files.append(tile_file)
 
-            else:
-                # Process tiles sequentially (original behavior)
-                logger.info(f"Processing with spatial tiling ({self.n_tiles} tiles sequentially)")
+        # Merge tile files lazily using xarray
+        logger.info("Merging tile files...")
+        output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
 
-                for lat_slice, lon_slice, tile_name in tiles:
-                    tile_indices = self._process_spatial_tile(combined_ds, lat_slice, lon_slice, tile_name)
+        # Open tiles with chunking (lazy loading)
+        tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
 
-                    # Save tile immediately
-                    tile_ds = xr.Dataset(tile_indices)
-                    tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
-                    logger.info(f"  Saving tile {tile_name} to {tile_file}...")
-
-                    with dask.config.set(scheduler='threads'):
-                        encoding = {}
-                        for var_name in tile_ds.data_vars:
-                            encoding[var_name] = {
-                                'zlib': True,
-                                'complevel': 4
-                            }
-                        tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
-
-                    tile_files.append(tile_file)
-                    del tile_indices, tile_ds  # Free memory
-
-            # Merge tile files lazily using xarray
-            logger.info("Merging tile files...")
-            output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
-
-            # Open tiles with chunking (lazy loading)
-            tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
-
-            # Concatenate lazily (doesn't load data into memory)
-            if self.n_tiles == 4:
-                # NW + NE = North, SW + SE = South
-                north = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
-                south = xr.concat([tile_datasets[2], tile_datasets[3]], dim='lon')
-                merged_ds = xr.concat([north, south], dim='lat')
-            elif self.n_tiles == 2:
-                # West + East
-                merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
-
-            # Add metadata
-            merged_ds.attrs['creation_date'] = datetime.now().isoformat()
-            merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v4.1 (Spatial Tiling)'
-            merged_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-            merged_ds.attrs['indices_count'] = len(merged_ds.data_vars)
-            merged_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
-            merged_ds.attrs['baseline_period'] = '1981-2000'
-            merged_ds.attrs['spatial_tiling'] = f'{self.n_tiles} tiles merged'
-            merged_ds.attrs['note'] = 'Processed with spatial tiling for memory efficiency. Extreme indices use baseline percentiles.'
-
-            # Save merged dataset (compute in chunks to avoid OOM)
-            logger.info(f"Saving merged dataset to {output_file}...")
-            with dask.config.set(scheduler='threads'):
-                encoding = {}
-                for var_name in merged_ds.data_vars:
-                    encoding[var_name] = {
-                        'zlib': True,
-                        'complevel': 4,
-                        'chunksizes': (1, 69, 281)
-                    }
-
-                # Use delayed writing to avoid loading all data at once
-                merged_ds.to_netcdf(
-                    output_file,
-                    engine='netcdf4',
-                    encoding=encoding,
-                    compute=True  # Let dask handle the computation in chunks
-                )
-
-            # Clean up
-            for ds in tile_datasets:
-                ds.close()
-            for tile_file in tile_files:
-                tile_file.unlink()
-
-            logger.info(f"Merged tiles into {output_file}")
-
-            # Report file size
-            file_size_mb = output_file.stat().st_size / (1024 * 1024)
-            logger.info(f"Output file size: {file_size_mb:.2f} MB")
-
-            # Track final memory
-            final_memory = process.memory_info().rss / 1024 / 1024
-            logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
-
-            return output_file
-
-        else:
-            # Calculate basic temperature indices
-            logger.info("Calculating basic temperature indices...")
-            basic_indices = self.calculate_temperature_indices(combined_ds)
-            logger.info(f"  Calculated {len(basic_indices)} basic indices")
-
-            # Calculate extreme temperature indices
-            logger.info("Calculating extreme temperature indices...")
-            extreme_indices = self.calculate_extreme_indices(combined_ds)
-            logger.info(f"  Calculated {len(extreme_indices)} extreme indices")
-
-            # Calculate Phase 7 & Phase 9 advanced temperature indices
-            logger.info("Calculating advanced temperature indices (Phase 7 & 9)...")
-            advanced_indices = self.calculate_advanced_temperature_indices(combined_ds)
-            logger.info(f"  Calculated {len(advanced_indices)} advanced indices")
-
-            # Merge all indices
-            all_indices = {**basic_indices, **extreme_indices, **advanced_indices}
-            logger.info(f"  Total: {len(all_indices)} temperature indices")
-            logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Advanced (Phase 7+9): {len(advanced_indices)}")
-
-        if not all_indices:
-            logger.warning("No indices calculated")
-            return None
-
-        # Combine indices into dataset
-        logger.info(f"Combining {len(all_indices)} indices into dataset...")
-        result_ds = xr.Dataset(all_indices)
+        # Concatenate lazily (doesn't load data into memory)
+        if self.n_tiles == 4:
+            # NW + NE = North, SW + SE = South
+            north = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
+            south = xr.concat([tile_datasets[2], tile_datasets[3]], dim='lon')
+            merged_ds = xr.concat([north, south], dim='lat')
+        elif self.n_tiles == 2:
+            # West + East
+            merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
 
         # Add metadata
-        result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber temperature pipeline v4.0 (Phase 9)'
-        result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-        result_ds.attrs['indices_count'] = len(all_indices)
-        result_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
-        result_ds.attrs['baseline_period'] = '1981-2000'
-        result_ds.attrs['note'] = 'Extreme indices (tx90p, tx10p, tn90p, tn10p, WSDI, CSDI) use baseline percentiles. Phase 7 adds spell frequency, growing season timing. Phase 9 adds temperature seasonality and heat wave index.'
+        merged_ds.attrs['creation_date'] = datetime.now().isoformat()
+        merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v5.0 (Parallel Spatial Tiling)'
+        merged_ds.attrs['time_range'] = f'{start_year}-{end_year}'
+        merged_ds.attrs['indices_count'] = len(merged_ds.data_vars)
+        merged_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
+        merged_ds.attrs['baseline_period'] = '1981-2000'
+        merged_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
+        merged_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices use baseline percentiles.'
 
-        # Save output
-        output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
-        logger.info(f"Saving to {output_file}...")
-
+        # Save merged dataset (compute in chunks to avoid OOM)
+        logger.info(f"Saving merged dataset to {output_file}...")
         with dask.config.set(scheduler='threads'):
             encoding = {}
-            for var_name in result_ds.data_vars:
+            for var_name in merged_ds.data_vars:
                 encoding[var_name] = {
                     'zlib': True,
                     'complevel': 4,
-                    'chunksizes': (1, 69, 281)  # Aligned chunks for storage
+                    'chunksizes': (1, 69, 281)
                 }
 
-            result_ds.to_netcdf(
+            # Use delayed writing to avoid loading all data at once
+            merged_ds.to_netcdf(
                 output_file,
                 engine='netcdf4',
-                encoding=encoding
+                encoding=encoding,
+                compute=True  # Let dask handle the computation in chunks
             )
 
-        # Report memory usage
-        final_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
+        # Clean up
+        for ds in tile_datasets:
+            ds.close()
+        for tile_file in tile_files:
+            tile_file.unlink()
+
+        logger.info(f"Merged tiles into {output_file}")
 
         # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
+        file_size_mb = output_file.stat().st_size / (1024 / 1024)
         logger.info(f"Output file size: {file_size_mb:.2f} MB")
+
+        # Track final memory
+        final_memory = process.memory_info().rss / 1024 / 1024
+        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
 
         return output_file
 
@@ -852,7 +754,7 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 def main():
     """Main entry point with command-line interface."""
     parser = argparse.ArgumentParser(
-        description="Temperature Indices Pipeline: Calculate 35 temperature-based climate indices (Phase 9)",
+        description="Temperature Indices Pipeline: Calculate 35 temperature-based climate indices (Phase 9)\nUses parallel spatial tiling for optimal memory efficiency and performance.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Indices calculated:
@@ -861,12 +763,20 @@ Indices calculated:
   Advanced Phase 7 (8): Spell frequency, growing season timing, variability
   Advanced Phase 9 (2): Temperature seasonality, heat wave index
 
+Processing:
+  - Parallel spatial tiling is always enabled (default: 4 quadrants)
+  - 3-4x faster than sequential processing
+  - Memory-efficient (~10GB RAM for full CONUS dataset)
+
 Examples:
-  # Process default period (1981-2024)
+  # Process default period (1981-2024) with 4 tiles
   python temperature_pipeline.py
 
   # Process single year
   python temperature_pipeline.py --start-year 2023 --end-year 2023
+
+  # Process with 2 tiles (east/west split)
+  python temperature_pipeline.py --n-tiles 2
 
   # Process with custom output directory
   python temperature_pipeline.py --output-dir ./results
@@ -920,23 +830,11 @@ Examples:
     )
 
     parser.add_argument(
-        '--spatial-tiling',
-        action='store_true',
-        help='Enable spatial tiling to reduce memory usage (~4x less RAM)'
-    )
-
-    parser.add_argument(
         '--n-tiles',
         type=int,
         default=4,
         choices=[2, 4],
         help='Number of spatial tiles: 2 (east/west) or 4 (quadrants) (default: 4)'
-    )
-
-    parser.add_argument(
-        '--parallel-tiles',
-        action='store_true',
-        help='Process tiles in parallel for ~3-4x speedup (requires --spatial-tiling)'
     )
 
     args = parser.parse_args()
@@ -954,9 +852,7 @@ Examples:
     pipeline = TemperaturePipeline(
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard,
-        use_spatial_tiling=args.spatial_tiling,
-        n_tiles=args.n_tiles,
-        parallel_tiles=args.parallel_tiles
+        n_tiles=args.n_tiles
     )
 
     try:
