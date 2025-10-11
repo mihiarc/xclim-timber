@@ -1,0 +1,138 @@
+{
+  "analysis_date": "2025-10-11",
+  "dataset_location": "outputs/production/temperature/",
+  "files_analyzed": 8,
+  "years_sampled": [
+    1981,
+    1990,
+    2000,
+    2003,
+    2005,
+    2010,
+    2020,
+    2024
+  ],
+  "total_issues": 474,
+  "issues_by_severity": {
+    "critical": 222,
+    "high": 61,
+    "medium": 191,
+    "low": 0
+  },
+  "critical_findings": {
+    "1_data_type_error": {
+      "severity": "CRITICAL",
+      "description": "Multiple count-based indices have incorrect units (nanoseconds instead of days)",
+      "affected_variables": [
+        "hot_days",
+        "summer_days",
+        "frost_days",
+        "ice_days",
+        "tropical_nights",
+        "consecutive_frost_days",
+        "frost_season_length",
+        "frost_free_season_length",
+        "tx90p",
+        "tx10p",
+        "tn90p",
+        "tn10p",
+        "warm_spell_duration_index",
+        "cold_spell_duration_index",
+        "heat_wave_index"
+      ],
+      "years_affected": [
+        2003,
+        2005,
+        2010,
+        2020,
+        2024
+      ],
+      "impact": "Data values incorrect by factor of ~8.64\u00d710\u00b9\u00b3",
+      "fix_required": "Convert timedelta to integer days in xclim pipeline"
+    },
+    "2_dimension_mismatch": {
+      "severity": "CRITICAL",
+      "description": "Year 2003 has incorrect grid dimensions",
+      "details": {
+        "expected_shape": {
+          "lat": 621,
+          "lon": 1405
+        },
+        "actual_shape": {
+          "lat": 1242,
+          "lon": 1405
+        },
+        "issue": "Latitude dimension is doubled"
+      },
+      "impact": "Spatial analysis impossible for 2003",
+      "fix_required": "Re-process 2003 with correct grid"
+    },
+    "3_negative_counts": {
+      "severity": "CRITICAL",
+      "description": "Count indices contain negative values",
+      "affected_indices": 70,
+      "years_affected": [
+        2003,
+        2005,
+        2010,
+        2020,
+        2024
+      ],
+      "impact": "Physical impossibility - counts must be >= 0",
+      "fix_required": "Review calculation logic and data type handling"
+    },
+    "4_unrealistic_temperatures": {
+      "severity": "HIGH",
+      "description": "Temperature values exceed realistic ranges",
+      "examples": [
+        "Values >60\u00b0C found in tg_mean, tx_max, tn_min",
+        "Extreme temperature ranges suggesting data errors"
+      ],
+      "years_affected": [
+        2003,
+        2005,
+        2010,
+        2020,
+        2024
+      ],
+      "impact": "Questions data quality and processing accuracy"
+    },
+    "5_data_coverage": {
+      "severity": "HIGH",
+      "description": "Widespread NaN coverage issues",
+      "details": {
+        "standard_nan_percent": 44.8,
+        "year_2003_nan_percent": 72.4,
+        "affected_variables": "All 35 indices show >30% NaN"
+      },
+      "impact": "Limited spatial coverage for analysis",
+      "likely_cause": "Ocean/land masking or incomplete source data"
+    }
+  },
+  "recommendations": {
+    "immediate_actions": [
+      "Fix data type conversion in xclim pipeline (timedelta to days)",
+      "Re-process all affected years (2003, 2005, 2010, 2020, 2024)",
+      "Add unit validation checks to pipeline",
+      "Fix 2003 grid dimension issue"
+    ],
+    "validation_steps": [
+      "Verify units attribute is 'days' not 'nanoseconds'",
+      "Check all count values are in range [0, 366]",
+      "Validate temperature relationships (tg between tn and tx)",
+      "Ensure consistent grid dimensions across all years"
+    ],
+    "pipeline_improvements": [
+      "Add automated quality checks before saving outputs",
+      "Implement logical relationship validation",
+      "Create test suite for edge cases",
+      "Document expected value ranges for all indices"
+    ]
+  },
+  "technical_notes": {
+    "root_cause": "xclim functions returning timedelta64 instead of integer days",
+    "affected_functions": "Likely threshold count functions in xclim.indices",
+    "solution": "Convert timedelta results using .dt.days or similar",
+    "verification": "Check dtype and units attributes in NetCDF files"
+  }
+}
