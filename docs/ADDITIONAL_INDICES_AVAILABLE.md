@@ -1,7 +1,12 @@
 # Additional Climate Indices Available in xclim
 
+> **⚠️ OUTDATED - This document is from Phase 5 (October 2025)**
+> **Current status:** 80/80 indices implemented (100% complete)
+> **For current index catalog:** See [ACHIEVABLE_INDICES_ROADMAP.md](ACHIEVABLE_INDICES_ROADMAP.md)
+> **This document preserved for historical reference - moved to archive soon**
+
 ## Overview
-xclim provides **151 total climate indicators** in the `xclim.indicators.atmos` module. We currently implement **50 indices** across four specialized pipelines (was 46, adding 4 multivariate in Phase 5). This document tracks **101 additional indices** that could be added to enhance our climate analysis capabilities.
+xclim provides **151 total climate indicators** in the `xclim.indicators.atmos` module. ~~We currently implement **50 indices**~~ **[UPDATE: Now 80 indices]** across ~~four~~ **seven** specialized pipelines (~~was 46, adding 4 multivariate in Phase 5~~). This document tracks ~~**101 additional indices**~~ historical planning from Phase 5.
 
 ## Current Implementation Status (50 indices)
 

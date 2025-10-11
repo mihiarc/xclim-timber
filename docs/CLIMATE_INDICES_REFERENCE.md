@@ -1,12 +1,21 @@
 # Climate Indices Reference Guide
 
-## Overview
-The xclim-timber pipeline suite calculates **26 distinct climate indices** across three specialized pipelines. Each index is scientifically validated and follows CF (Climate and Forecast) conventions for metadata.
+> **⚠️ SEVERELY OUTDATED - This document is from early project phases**
+> **Current status:** 80/80 indices implemented (100% complete)
+> **For current index catalog:** See [ACHIEVABLE_INDICES_ROADMAP.md](ACHIEVABLE_INDICES_ROADMAP.md)
+> **This document will be archived or completely rewritten**
 
-**Total Indices: 26** (incrementally adding more)
-- Temperature Pipeline: 12 indices (was 11, added consecutive_frost_days)
-- Precipitation Pipeline: 6 indices
-- Humidity Pipeline: 8 indices
+## Overview
+~~The xclim-timber pipeline suite calculates **26 distinct climate indices** across three specialized pipelines.~~ **[OUTDATED: Now 80 indices across 7 pipelines]** Each index is scientifically validated and follows CF (Climate and Forecast) conventions for metadata.
+
+**~~Total Indices: 26~~ ACTUAL: 80 indices** (100% complete!)
+- ~~Temperature Pipeline: 12 indices~~ **Temperature: 35 indices**
+- ~~Precipitation Pipeline: 6 indices~~ **Precipitation: 13 indices**
+- ~~Humidity Pipeline: 8 indices~~ **Humidity: 8 indices**
+- **Human Comfort: 3 indices** (NEW)
+- **Multivariate: 4 indices** (NEW)
+- **Agricultural: 5 indices** (NEW)
+- **Drought: 12 indices** (NEW)
 
 ---
 

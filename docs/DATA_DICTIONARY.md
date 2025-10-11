@@ -1,9 +1,14 @@
 # Climate Indices Data Dictionary
 ## xclim-timber: Comprehensive Climate Metrics Reference Guide
 
+> **⚠️ PARTIALLY OUTDATED - Index counts need updating**
+> **Current status:** 80/80 indices implemented (100% complete)
+> **For authoritative index catalog:** See [ACHIEVABLE_INDICES_ROADMAP.md](ACHIEVABLE_INDICES_ROADMAP.md)
+> **This dictionary structure is good but data is incomplete - update in progress**
+
 This document provides a complete reference for all climate indices calculated by the xclim-timber pipeline, organized by category following World Meteorological Organization (WMO) standards.
 
-**Total Indices**: 42+ core indices with variations across 8 categories
+**~~Total Indices: 42+ core indices~~ ACTUAL: 80 indices** across ~~8~~ **7 categories** (COMPLETE)
 
 ## Quick Reference
 

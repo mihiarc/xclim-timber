@@ -254,7 +254,9 @@ rioxarray>=0.15.0      # Xarray-rasterio integration
 
 ## Comprehensive Climate Indices
 
-The pipeline calculates **84 comprehensive climate indices** using the scientifically-validated xclim library, organized into seven standardized categories following World Meteorological Organization (WMO) standards.
+The pipeline calculates **80 comprehensive climate indices** using the scientifically-validated xclim library, organized into seven standardized categories following World Meteorological Organization (WMO) standards.
+
+**Status:** ✅ 80/80 indices implemented (100% of achievable goal with available PRISM data)
 
 ### Underlying Climate Variables
 
@@ -271,7 +273,7 @@ The pipeline calculates **84 comprehensive climate indices** using the scientifi
 - Precipitation: 'pr', 'precipitation', 'precip', 'prcp'
 - Humidity: 'hus', 'huss', 'specific_humidity', 'hurs', 'relative_humidity', 'rh'
 
-### Temperature Indices (17 indices)
+### Temperature Indices (35 indices)
 
 **Basic Statistics:**
 - `tg_mean`: Annual mean temperature
@@ -301,7 +303,7 @@ The pipeline calculates **84 comprehensive climate indices** using the scientifi
 - `warm_spell_duration_index`: Consecutive warm periods
 - `cold_spell_duration_index`: Consecutive cold periods
 
-### Precipitation Indices (10 indices)
+### Precipitation Indices (13 indices)
 
 **Basic Statistics:**
 - `prcptot`: Total annual precipitation
@@ -319,39 +321,71 @@ The pipeline calculates **84 comprehensive climate indices** using the scientifi
 - `r95p`: Very wet days (above 95th percentile)
 - `r99p`: Extremely wet days (above 99th percentile)
 
-### Humidity Indices (2 indices)
+### Humidity Indices (8 indices)
 
-**Basic Humidity Calculations:**
-- `dewpoint_temperature`: Dewpoint temperature from specific humidity
-- `relative_humidity`: Relative humidity from specific humidity and temperature
+**Dewpoint Statistics:**
+- `dewpoint_mean`: Annual mean dewpoint temperature
+- `dewpoint_min`: Annual minimum dewpoint temperature
+- `dewpoint_max`: Annual maximum dewpoint temperature
+- `humid_days`: Days with high humidity (dewpoint > 18°C)
 
-### Human Comfort Indices (2 indices)
+**Vapor Pressure Deficit (VPD) Statistics:**
+- `vpdmax_mean`: Mean daily maximum VPD
+- `vpdmin_mean`: Mean daily minimum VPD
+- `extreme_vpd_days`: Days with extreme VPD (> 4 kPa, high plant stress)
+- `low_vpd_days`: Days with low VPD (< 0.5 kPa, fog/high moisture)
+
+### Human Comfort Indices (3 indices)
 
 **Heat Stress Assessment:**
 - `heat_index`: Heat index combining temperature and humidity effects
 - `humidex`: Canadian humidex index for apparent temperature
+- `relative_humidity`: Relative humidity derived from specific humidity and temperature
 
-### Evapotranspiration Indices (3 indices)
+### Agricultural Indices (5 indices)
 
-**Water Balance & Agricultural:**
-- `potential_evapotranspiration`: Potential evapotranspiration (Thornthwaite method)
-- `reference_evapotranspiration`: FAO-56 Penman-Monteith reference ET
-- `spei_3`: 3-month Standardized Precipitation Evapotranspiration Index
+**Growing Season:**
+- `growing_season_length`: Total days between first and last occurrence of 6+ consecutive days with temperature above 5°C (ETCCDI standard)
+
+**Water Balance:**
+- `potential_evapotranspiration`: Annual potential evapotranspiration using Baier-Robertson 1965 method (temperature-only)
+
+**Crop-Specific:**
+- `corn_heat_units`: Annual accumulated corn heat units for crop development (USDA standard)
+
+**Spring Thaw:**
+- `thawing_degree_days`: Sum of degree-days above 0°C (permafrost monitoring, spring melt timing)
+
+**Seasonal Precipitation:**
+- `growing_season_precipitation`: Total precipitation during growing season (April-October)
 
 ### Multivariate Indices (4 indices)
 
-**Combined Temperature-Precipitation Events:**
-- `cold_and_dry_days`: Days with low temperature and low precipitation
-- `cold_and_wet_days`: Days with low temperature and high precipitation
-- `warm_and_dry_days`: Days with high temperature and low precipitation
-- `warm_and_wet_days`: Days with high temperature and high precipitation
+**Combined Temperature-Precipitation Events (Compound Extremes):**
+- `cold_and_dry_days`: Days with low temperature AND low precipitation (compound drought)
+- `cold_and_wet_days`: Days with low temperature AND high precipitation (flooding risk)
+- `warm_and_dry_days`: Days with high temperature AND low precipitation (drought/fire risk)
+- `warm_and_wet_days`: Days with high temperature AND high precipitation (compound extremes)
 
-### Agricultural Indices (3 indices)
+### Drought Indices (12 indices)
 
-**Specialized Agricultural Applications:**
-- `gsl`: Growing season length
-- `spi_3`: 3-month Standardized Precipitation Index
-- `spei_3`: Enhanced drought index with evapotranspiration
+**Standardized Precipitation Index - SPI (5 windows):**
+- `spi_1month`: 1-month SPI (short-term agricultural drought)
+- `spi_3month`: 3-month SPI (seasonal agricultural drought - most common)
+- `spi_6month`: 6-month SPI (medium-term agricultural/hydrological drought)
+- `spi_12month`: 12-month SPI (long-term hydrological drought)
+- `spi_24month`: 24-month SPI (multi-year persistent drought)
+
+**Dry Spell Analysis (4):**
+- `cdd`: Maximum consecutive dry days (ETCCDI standard)
+- `dry_spell_frequency`: Number of distinct dry spell events (≥3 consecutive days < 1mm)
+- `dry_spell_total_length`: Total days in all dry spells per year
+- `dry_days`: Total number of dry days per year
+
+**Precipitation Intensity (3):**
+- `sdii`: Simple daily intensity index (ETCCDI standard)
+- `max_7day_pr_intensity`: Maximum 7-day rolling precipitation sum
+- `fraction_heavy_precip`: Fraction of annual precipitation from heavy events (>75th percentile)
 
 ### Extreme Weather Indices (6 indices)
 
