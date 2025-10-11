@@ -170,7 +170,8 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         ds: xr.Dataset,
         lat_slice: slice,
         lon_slice: slice,
-        tile_name: str
+        tile_name: str,
+        baseline_percentiles: dict
     ) -> dict:
         """
         Process a single spatial tile.
@@ -180,6 +181,7 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             lat_slice: Latitude slice for this tile
             lon_slice: Longitude slice for this tile
             tile_name: Name of this tile (for logging)
+            baseline_percentiles: Baseline percentile thresholds for extreme indices
 
         Returns:
             Dictionary of calculated indices for this tile
@@ -189,26 +191,19 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         # Select spatial subset
         tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
 
-        # Subset baseline percentiles to match tile
-        tile_baselines = {}
-        for key, baseline in self.baseline_percentiles.items():
-            tile_baselines[key] = baseline.isel(lat=lat_slice, lon=lon_slice)
+        # Subset baseline percentiles to match tile (thread-safe - no shared state mutation)
+        tile_baselines = {
+            key: baseline.isel(lat=lat_slice, lon=lon_slice)
+            for key, baseline in baseline_percentiles.items()
+        }
 
-        # Temporarily replace baselines with tile-specific ones
-        original_baselines = self.baseline_percentiles
-        self.baseline_percentiles = tile_baselines
+        # Calculate indices for this tile (passing baselines as parameter)
+        basic_indices = self.calculate_temperature_indices(tile_ds)
+        extreme_indices = self.calculate_extreme_indices(tile_ds, tile_baselines)
+        advanced_indices = self.calculate_advanced_temperature_indices(tile_ds)
 
-        try:
-            # Calculate indices for this tile
-            basic_indices = self.calculate_temperature_indices(tile_ds)
-            extreme_indices = self.calculate_extreme_indices(tile_ds)
-            advanced_indices = self.calculate_advanced_temperature_indices(tile_ds)
-
-            all_indices = {**basic_indices, **extreme_indices, **advanced_indices}
-            return all_indices
-        finally:
-            # Restore original baselines
-            self.baseline_percentiles = original_baselines
+        all_indices = {**basic_indices, **extreme_indices, **advanced_indices}
+        return all_indices
 
     def calculate_temperature_indices(self, ds: xr.Dataset) -> dict:
         """
@@ -299,12 +294,13 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         return indices
 
-    def calculate_extreme_indices(self, ds: xr.Dataset) -> dict:
+    def calculate_extreme_indices(self, ds: xr.Dataset, baseline_percentiles: dict) -> dict:
         """
         Calculate percentile-based extreme temperature indices using pre-calculated baseline.
 
         Args:
             ds: Dataset with temperature variables (tasmax, tasmin)
+            baseline_percentiles: Dictionary of baseline percentile thresholds
 
         Returns:
             Dictionary of calculated extreme indices
@@ -316,21 +312,21 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             logger.info("  - Calculating warm days (tx90p)...")
             indices['tx90p'] = atmos.tx90p(
                 tasmax=ds.tasmax,
-                tasmax_per=self.baseline_percentiles['tx90p_threshold'],
+                tasmax_per=baseline_percentiles['tx90p_threshold'],
                 freq='YS'
             )
 
             logger.info("  - Calculating cool days (tx10p)...")
             indices['tx10p'] = atmos.tx10p(
                 tasmax=ds.tasmax,
-                tasmax_per=self.baseline_percentiles['tx10p_threshold'],
+                tasmax_per=baseline_percentiles['tx10p_threshold'],
                 freq='YS'
             )
 
             logger.info("  - Calculating warm spell duration (WSDI)...")
             indices['warm_spell_duration_index'] = atmos.warm_spell_duration_index(
                 tasmax=ds.tasmax,
-                tasmax_per=self.baseline_percentiles['tx90p_threshold'],
+                tasmax_per=baseline_percentiles['tx90p_threshold'],
                 window=6,
                 freq='YS'
             )
@@ -340,21 +336,21 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             logger.info("  - Calculating warm nights (tn90p)...")
             indices['tn90p'] = atmos.tn90p(
                 tasmin=ds.tasmin,
-                tasmin_per=self.baseline_percentiles['tn90p_threshold'],
+                tasmin_per=baseline_percentiles['tn90p_threshold'],
                 freq='YS'
             )
 
             logger.info("  - Calculating cool nights (tn10p)...")
             indices['tn10p'] = atmos.tn10p(
                 tasmin=ds.tasmin,
-                tasmin_per=self.baseline_percentiles['tn10p_threshold'],
+                tasmin_per=baseline_percentiles['tn10p_threshold'],
                 freq='YS'
             )
 
             logger.info("  - Calculating cold spell duration (CSDI)...")
             indices['cold_spell_duration_index'] = atmos.cold_spell_duration_index(
                 tasmin=ds.tasmin,
-                tasmin_per=self.baseline_percentiles['tn10p_threshold'],
+                tasmin_per=baseline_percentiles['tn10p_threshold'],
                 window=6,
                 freq='YS'
             )
@@ -588,7 +584,9 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         def process_and_save_tile(tile_info):
             lat_slice, lon_slice, tile_name = tile_info
-            tile_indices = self._process_spatial_tile(combined_ds, lat_slice, lon_slice, tile_name)
+            tile_indices = self._process_spatial_tile(
+                combined_ds, lat_slice, lon_slice, tile_name, self.baseline_percentiles
+            )
 
             # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
             tile_ds = xr.Dataset(tile_indices)
@@ -613,8 +611,15 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
             future_to_tile = {executor.submit(process_and_save_tile, tile): tile for tile in tiles}
             for future in as_completed(future_to_tile):
-                tile_file = future.result()
-                tile_files.append(tile_file)
+                tile_info = future_to_tile[future]
+                tile_name = tile_info[2]
+                try:
+                    tile_file = future.result()
+                    tile_files.append(tile_file)
+                    logger.info(f"  ✓ Tile {tile_name} completed successfully")
+                except Exception as e:
+                    logger.error(f"  ✗ Tile {tile_name} failed: {e}")
+                    raise  # Re-raise to stop processing
 
         # Merge tile files lazily using xarray
         logger.info("Merging tile files...")
@@ -671,7 +676,7 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         logger.info(f"Merged tiles into {output_file}")
 
         # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 / 1024)
+        file_size_mb = output_file.stat().st_size / (1024 * 1024)
         logger.info(f"Output file size: {file_size_mb:.2f} MB")
 
         # Track final memory
