@@ -47,6 +47,7 @@ ENV/
 
 # Logs
 *.log
+logs/archive/
 
 # Environment variables
 .env
@@ -59,6 +60,13 @@ htmlcov/
 # Output directories (keep structure but ignore contents)
 outputs/*
 !outputs/.gitkeep
+
+# Test outputs (ignore phase test directories)
+outputs/phase*_test/
+outputs/phase*_final_test/
+
+# Production run results
+outputs/production/*_results_*.json
 
 # Baseline percentiles (keep structure but ignore large .nc files)
 data/baselines/*.nc

@@ -49,7 +49,7 @@ class DroughtPipeline:
                                           heavy precipitation fraction
     """
 
-    def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
+    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False):
         """
         Initialize the pipeline.
 
@@ -73,8 +73,8 @@ class DroughtPipeline:
         # Optimal chunk configuration (aligned with dimensions)
         self.chunk_config = {
             'time': 365,  # One year of daily data
-            'lat': 69,    # 621 / 69 = 9 even chunks
-            'lon': 281    # 1405 / 281 = 5 even chunks
+            'lat': 103,   # 621 / 103 = 6 chunks (smaller for less memory)
+            'lon': 201    # 1405 / 201 = 7 chunks (smaller for less memory)
         }
 
     def setup_dask_client(self):
@@ -645,8 +645,8 @@ Examples:
     parser.add_argument(
         '--chunk-years',
         type=int,
-        default=12,
-        help='Number of years to process per chunk (default: 12)'
+        default=1,
+        help='Number of years to process per chunk (default: 1 for memory efficiency)'
     )
 
     parser.add_argument(

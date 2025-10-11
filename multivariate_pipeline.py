@@ -42,7 +42,7 @@ class MultivariatePipeline:
     Processes 4 compound extreme indices combining temperature and precipitation without loading full dataset into memory.
     """
 
-    def __init__(self, chunk_years: int = 12, enable_dashboard: bool = False):
+    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False):
         """
         Initialize the pipeline.
 
@@ -67,24 +67,14 @@ class MultivariatePipeline:
         # Optimal chunk configuration (aligned with dimensions)
         self.chunk_config = {
             'time': 365,  # One year of daily data
-            'lat': 69,    # 621 / 69 = 9 even chunks
-            'lon': 281    # 1405 / 281 = 5 even chunks
+            'lat': 103,   # 621 / 103 = 6 chunks (smaller for less memory)
+            'lon': 201    # 1405 / 201 = 7 chunks (smaller for less memory)
         }
 
     def setup_dask_client(self):
         """Initialize Dask client with memory limits."""
-        if self.client is None:
-            dashboard_address = ':8787' if self.enable_dashboard else None
-            self.client = Client(
-                n_workers=2,
-                threads_per_worker=1,
-                memory_limit='2GB',  # Strict memory limit per worker
-                dashboard_address=dashboard_address,
-                silence_logs=logging.ERROR
-            )
-            if self.enable_dashboard:
-                logger.info(f"Dask dashboard available at: http://localhost:8787")
-            logger.info(f"Dask client initialized with 2 workers, 2GB each")
+        # Use threaded scheduler instead of distributed for lower memory overhead
+        logger.info("Using Dask threaded scheduler (no distributed client for memory efficiency)")
 
     def close(self):
         """Clean up resources."""
@@ -534,8 +524,8 @@ Examples:
     parser.add_argument(
         '--chunk-years',
         type=int,
-        default=12,
-        help='Number of years to process per chunk (default: 12)'
+        default=1,
+        help='Number of years to process per chunk (default: 1 for memory efficiency)'
     )
 
     parser.add_argument(
