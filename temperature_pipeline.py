@@ -21,6 +21,7 @@ import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from queue import Queue
 
 # Suppress common warnings that don't affect functionality
 warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
@@ -576,7 +577,11 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         output_dir: Path
     ) -> Path:
         """
-        Process a single time chunk.
+        Process a single time chunk with proper resource management.
+
+        Fixes:
+        - Issue #73: Proper dataset resource cleanup (try/finally)
+        - Issue #72: Thread-safe tile file collection (Queue instead of list)
 
         Args:
             start_year: Start year for this chunk
@@ -585,6 +590,9 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         Returns:
             Path to output file
+
+        Raises:
+            ValueError: If merged dimensions don't match expected values
         """
         logger.info(f"\nProcessing chunk: {start_year}-{end_year}")
 
@@ -593,152 +601,221 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         logger.info(f"Initial memory: {initial_memory:.1f} MB")
 
-        # Load temperature data
-        logger.info("Loading temperature data...")
-        ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
+        # Initialize resources that need cleanup
+        ds = None
+        combined_ds = None
+        tile_datasets = []
 
-        # Select time range
-        combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
+        try:
+            # Load temperature data
+            logger.info("Loading temperature data...")
+            ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
 
-        # Rename temperature variables for xclim compatibility
-        rename_map = {
-            'tmean': 'tas',
-            'tmax': 'tasmax',
-            'tmin': 'tasmin'
-        }
+            # Select time range
+            combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
 
-        for old_name, new_name in rename_map.items():
-            if old_name in combined_ds:
-                combined_ds = combined_ds.rename({old_name: new_name})
-                logger.debug(f"Renamed {old_name} to {new_name}")
+            # Rename temperature variables for xclim compatibility
+            rename_map = {
+                'tmean': 'tas',
+                'tmax': 'tasmax',
+                'tmin': 'tasmin'
+            }
 
-        # Fix units for temperature variables
-        unit_fixes = {
-            'tas': 'degC',
-            'tasmax': 'degC',
-            'tasmin': 'degC'
-        }
+            for old_name, new_name in rename_map.items():
+                if old_name in combined_ds:
+                    combined_ds = combined_ds.rename({old_name: new_name})
+                    logger.debug(f"Renamed {old_name} to {new_name}")
 
-        for var_name, unit in unit_fixes.items():
-            if var_name in combined_ds:
-                combined_ds[var_name].attrs['units'] = unit
-                combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
+            # Fix units for temperature variables
+            unit_fixes = {
+                'tas': 'degC',
+                'tasmax': 'degC',
+                'tasmin': 'degC'
+            }
 
-        # Process tiles in parallel (always enabled for memory efficiency and performance)
-        logger.info(f"Processing with parallel spatial tiling ({self.n_tiles} tiles)")
+            for var_name, unit in unit_fixes.items():
+                if var_name in combined_ds:
+                    combined_ds[var_name].attrs['units'] = unit
+                    combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
 
-        tiles = self._get_spatial_tiles(combined_ds)
-        tile_files = []
+            # Process tiles in parallel (always enabled for memory efficiency and performance)
+            logger.info(f"Processing with parallel spatial tiling ({self.n_tiles} tiles)")
 
-        def process_and_save_tile(tile_info):
-            lat_slice, lon_slice, tile_name = tile_info
-            tile_indices = self._process_spatial_tile(
-                combined_ds, lat_slice, lon_slice, tile_name, self.baseline_percentiles
-            )
+            tiles = self._get_spatial_tiles(combined_ds)
+            # Fix #72: Use thread-safe Queue instead of list
+            tile_files_queue = Queue()
 
-            # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
-            tile_ds = xr.Dataset(tile_indices)
+            def process_and_save_tile(tile_info):
+                """Process and save a single tile (thread-safe)."""
+                lat_slice, lon_slice, tile_name = tile_info
+                tile_indices = self._process_spatial_tile(
+                    combined_ds, lat_slice, lon_slice, tile_name, self.baseline_percentiles
+                )
+
+                # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
+                tile_ds = xr.Dataset(tile_indices)
+
+                # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
+                tile_ds = self.fix_count_indices(tile_ds)
+
+                tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
+                logger.info(f"  Saving tile {tile_name} to {tile_file}...")
+
+                # Use lock to prevent concurrent NetCDF writes (HDF5 library limitation)
+                with netcdf_write_lock:
+                    with dask.config.set(scheduler='threads'):
+                        encoding = {}
+                        for var_name in tile_ds.data_vars:
+                            encoding[var_name] = {
+                                'zlib': True,
+                                'complevel': 4
+                            }
+                        tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
+
+                del tile_indices, tile_ds  # Free memory
+                return tile_file
+
+            # Process all tiles in parallel using ThreadPoolExecutor
+            # Fix #72: Use dict to maintain tile order (thread-safe with lock)
+            tile_files_dict = {}
+            tile_files_lock = threading.Lock()
+
+            def process_and_save_tile_wrapper(tile_info):
+                """Wrapper to store result in dict with proper order."""
+                tile_file = process_and_save_tile(tile_info)
+                tile_name = tile_info[2]
+                # Thread-safe dict update
+                with tile_files_lock:
+                    tile_files_dict[tile_name] = tile_file
+                return tile_file
+
+            with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
+                future_to_tile = {executor.submit(process_and_save_tile_wrapper, tile): tile for tile in tiles}
+                for future in as_completed(future_to_tile):
+                    tile_info = future_to_tile[future]
+                    tile_name = tile_info[2]
+                    try:
+                        future.result()  # Will raise if failed
+                        logger.info(f"  ✓ Tile {tile_name} completed successfully")
+                    except Exception as e:
+                        logger.error(f"  ✗ Tile {tile_name} failed: {e}")
+                        raise  # Re-raise to stop processing
+
+            # Verify we have the expected number of tiles
+            if len(tile_files_dict) != self.n_tiles:
+                raise ValueError(f"Expected {self.n_tiles} tile files, but got {len(tile_files_dict)}")
+
+            # Build tile_files list in correct order for concatenation
+            if self.n_tiles == 4:
+                # Order matters for 4-tile merge: NW, NE, SW, SE
+                tile_files = [
+                    tile_files_dict['northwest'],
+                    tile_files_dict['northeast'],
+                    tile_files_dict['southwest'],
+                    tile_files_dict['southeast']
+                ]
+            elif self.n_tiles == 2:
+                # Order matters for 2-tile merge: West, East
+                tile_files = [
+                    tile_files_dict['west'],
+                    tile_files_dict['east']
+                ]
+
+            # Merge tile files lazily using xarray
+            logger.info("Merging tile files...")
+            output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
+
+            # Open tiles with chunking (lazy loading)
+            tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
+
+            # Concatenate lazily (doesn't load data into memory)
+            if self.n_tiles == 4:
+                # NW + NE = North, SW + SE = South
+                north = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
+                south = xr.concat([tile_datasets[2], tile_datasets[3]], dim='lon')
+                merged_ds = xr.concat([north, south], dim='lat')
+            elif self.n_tiles == 2:
+                # West + East
+                merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
+
+            # Fix #71: Validate dimensions after merge (detect concatenation bugs)
+            expected_dims = {'time': 1, 'lat': 621, 'lon': 1405}
+            actual_dims = dict(merged_ds.dims)
+            if actual_dims != expected_dims:
+                raise ValueError(
+                    f"Dimension mismatch after tile merge: {actual_dims} != {expected_dims}. "
+                    f"This indicates a tile concatenation bug (see Issue #71)."
+                )
 
             # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
-            tile_ds = self.fix_count_indices(tile_ds)
+            merged_ds = self.fix_count_indices(merged_ds)
 
-            tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
-            logger.info(f"  Saving tile {tile_name} to {tile_file}...")
+            # Add metadata
+            merged_ds.attrs['creation_date'] = datetime.now().isoformat()
+            merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v5.2 (Fixed Issues #70-73)'
+            merged_ds.attrs['time_range'] = f'{start_year}-{end_year}'
+            merged_ds.attrs['indices_count'] = len(merged_ds.data_vars)
+            merged_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
+            merged_ds.attrs['baseline_period'] = '1981-2000'
+            merged_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
+            merged_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices use baseline percentiles. Count indices stored as dimensionless (units=1) to prevent CF timedelta encoding.'
 
-            # Use lock to prevent concurrent NetCDF writes (HDF5 library limitation)
-            with netcdf_write_lock:
-                with dask.config.set(scheduler='threads'):
-                    encoding = {}
-                    for var_name in tile_ds.data_vars:
-                        encoding[var_name] = {
-                            'zlib': True,
-                            'complevel': 4
-                        }
-                    tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
+            # Save merged dataset (compute in chunks to avoid OOM)
+            logger.info(f"Saving merged dataset to {output_file}...")
+            with dask.config.set(scheduler='threads'):
+                encoding = {}
+                for var_name in merged_ds.data_vars:
+                    encoding[var_name] = {
+                        'zlib': True,
+                        'complevel': 4,
+                        'chunksizes': (1, 69, 281)
+                    }
 
-            del tile_indices, tile_ds  # Free memory
-            return tile_file
+                # Use delayed writing to avoid loading all data at once
+                merged_ds.to_netcdf(
+                    output_file,
+                    engine='netcdf4',
+                    encoding=encoding,
+                    compute=True  # Let dask handle the computation in chunks
+                )
 
-        # Process all tiles in parallel using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
-            future_to_tile = {executor.submit(process_and_save_tile, tile): tile for tile in tiles}
-            for future in as_completed(future_to_tile):
-                tile_info = future_to_tile[future]
-                tile_name = tile_info[2]
+            # Clean up tile files after successful merge
+            for tile_file in tile_files:
                 try:
-                    tile_file = future.result()
-                    tile_files.append(tile_file)
-                    logger.info(f"  ✓ Tile {tile_name} completed successfully")
+                    tile_file.unlink()
                 except Exception as e:
-                    logger.error(f"  ✗ Tile {tile_name} failed: {e}")
-                    raise  # Re-raise to stop processing
+                    logger.warning(f"Failed to delete tile file {tile_file}: {e}")
 
-        # Merge tile files lazily using xarray
-        logger.info("Merging tile files...")
-        output_file = output_dir / f'temperature_indices_{start_year}_{end_year}.nc'
+            logger.info(f"Merged tiles into {output_file}")
 
-        # Open tiles with chunking (lazy loading)
-        tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
+            # Report file size
+            file_size_mb = output_file.stat().st_size / (1024 * 1024)
+            logger.info(f"Output file size: {file_size_mb:.2f} MB")
 
-        # Concatenate lazily (doesn't load data into memory)
-        if self.n_tiles == 4:
-            # NW + NE = North, SW + SE = South
-            north = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
-            south = xr.concat([tile_datasets[2], tile_datasets[3]], dim='lon')
-            merged_ds = xr.concat([north, south], dim='lat')
-        elif self.n_tiles == 2:
-            # West + East
-            merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
+            # Track final memory
+            final_memory = process.memory_info().rss / 1024 / 1024
+            logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
 
-        # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
-        merged_ds = self.fix_count_indices(merged_ds)
+            return output_file
 
-        # Add metadata
-        merged_ds.attrs['creation_date'] = datetime.now().isoformat()
-        merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v5.1 (Fixed timedelta encoding bug)'
-        merged_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-        merged_ds.attrs['indices_count'] = len(merged_ds.data_vars)
-        merged_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
-        merged_ds.attrs['baseline_period'] = '1981-2000'
-        merged_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
-        merged_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices use baseline percentiles. Count indices stored as dimensionless (units=1) to prevent CF timedelta encoding.'
+        finally:
+            # Fix #73: Always clean up resources (prevents file handle exhaustion)
+            logger.debug("Cleaning up resources...")
 
-        # Save merged dataset (compute in chunks to avoid OOM)
-        logger.info(f"Saving merged dataset to {output_file}...")
-        with dask.config.set(scheduler='threads'):
-            encoding = {}
-            for var_name in merged_ds.data_vars:
-                encoding[var_name] = {
-                    'zlib': True,
-                    'complevel': 4,
-                    'chunksizes': (1, 69, 281)
-                }
+            # Close main dataset
+            if ds is not None:
+                try:
+                    ds.close()
+                    logger.debug("Closed main Zarr dataset")
+                except Exception as e:
+                    logger.warning(f"Failed to close main dataset: {e}")
 
-            # Use delayed writing to avoid loading all data at once
-            merged_ds.to_netcdf(
-                output_file,
-                engine='netcdf4',
-                encoding=encoding,
-                compute=True  # Let dask handle the computation in chunks
-            )
-
-        # Clean up
-        for ds in tile_datasets:
-            ds.close()
-        for tile_file in tile_files:
-            tile_file.unlink()
-
-        logger.info(f"Merged tiles into {output_file}")
-
-        # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        logger.info(f"Output file size: {file_size_mb:.2f} MB")
-
-        # Track final memory
-        final_memory = process.memory_info().rss / 1024 / 1024
-        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
-
-        return output_file
+            # Close tile datasets
+            for tile_ds in tile_datasets:
+                try:
+                    tile_ds.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close tile dataset: {e}")
 
     def _get_standard_name(self, var_name: str) -> str:
         """Get CF-compliant standard name for temperature variable."""
