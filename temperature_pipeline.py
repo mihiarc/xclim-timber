@@ -54,6 +54,18 @@ class TemperaturePipeline:
     - Advanced Phase 9 (2): Temperature seasonality, heat wave index
     """
 
+    # Count indices that need timedelta encoding fix
+    # These indices measure "number of days" and must use units='1' (dimensionless)
+    # to prevent xarray from interpreting units='days' as CF timedelta during NetCDF write
+    COUNT_INDICES = [
+        'summer_days', 'hot_days', 'ice_days', 'frost_days',
+        'tropical_nights', 'consecutive_frost_days',
+        'frost_season_length', 'frost_free_season_length',
+        'tx90p', 'tx10p', 'tn90p', 'tn10p',
+        'warm_spell_duration_index', 'cold_spell_duration_index',
+        'heat_wave_index'
+    ]
+
     def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False, n_tiles: int = 4):
         """
         Initialize the pipeline with parallel spatial tiling.
@@ -534,29 +546,28 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         Returns:
             Dataset with fixed count indices metadata
+
+        Raises:
+            Exception: If fix fails for any index (re-raised with context)
         """
-        COUNT_INDICES = [
-            'summer_days', 'hot_days', 'ice_days', 'frost_days',
-            'tropical_nights', 'consecutive_frost_days',
-            'frost_season_length', 'frost_free_season_length',
-            'tx90p', 'tx10p', 'tn90p', 'tn10p',
-            'warm_spell_duration_index', 'cold_spell_duration_index',
-            'heat_wave_index'
-        ]
+        try:
+            for idx_name in self.COUNT_INDICES:
+                if idx_name in ds.data_vars:
+                    original_units = ds[idx_name].attrs.get('units', 'days')
 
-        for idx_name in COUNT_INDICES:
-            if idx_name in ds.data_vars:
-                original_units = ds[idx_name].attrs.get('units', 'days')
+                    # Only fix if units='days' or 'day' (the problematic cases)
+                    if original_units in ['days', 'day']:
+                        # Change to dimensionless to prevent timedelta encoding
+                        ds[idx_name].attrs['units'] = '1'
+                        ds[idx_name].attrs['comment'] = f'Count of days (dimensionless to avoid CF timedelta encoding). Original units: {original_units}'
 
-                # Only fix if units='days' (the problematic case)
-                if original_units == 'days':
-                    # Change to dimensionless to prevent timedelta encoding
-                    ds[idx_name].attrs['units'] = '1'
-                    ds[idx_name].attrs['comments'] = f'Count of days (dimensionless to avoid CF timedelta encoding). Original units: {original_units}'
+                        logger.info(f"Fixed {idx_name}: units='{original_units}' → units='1' (dimensionless)")
 
-                    logger.debug(f"Fixed {idx_name}: units='days' → units='1' (dimensionless)")
+            return ds
 
-        return ds
+        except Exception as e:
+            logger.error(f"Failed to fix count indices: {e}")
+            raise
 
     def process_time_chunk(
         self,
