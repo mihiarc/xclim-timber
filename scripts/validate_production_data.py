@@ -135,9 +135,11 @@ class DataValidator:
                 # Check units
                 if units == 'nanoseconds':
                     result['checks_failed'] += 1
-                    result['errors'].append(f"{var_name}: units='nanoseconds' (should be 'days')")
+                    result['errors'].append(f"{var_name}: units='nanoseconds' (corrupted by timedelta encoding)")
                     print(f"  ✗ {var_name}: WRONG units (nanoseconds)")
-                elif units == 'days':
+                elif units in ['days', '1']:
+                    # Both 'days' and '1' (dimensionless) are valid for count indices
+                    # units='1' is used to prevent xarray timedelta encoding bug (see ROOT_CAUSE_ANALYSIS.md)
                     result['checks_passed'] += 1
                 else:
                     result['warnings'].append(f"{var_name}: unexpected units='{units}'")

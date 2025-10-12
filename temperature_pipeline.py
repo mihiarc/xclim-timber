@@ -520,6 +520,43 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
         return indices
 
+    def fix_count_indices(self, ds: xr.Dataset) -> xr.Dataset:
+        """
+        Fix count indices to prevent xarray timedelta encoding.
+
+        xarray interprets units='days' as a CF timedelta unit and converts
+        float64 → timedelta64[ns] during NetCDF write, resulting in NaT values.
+
+        Solution: Change units to '1' (dimensionless) to prevent timedelta encoding.
+
+        Args:
+            ds: Dataset with calculated indices
+
+        Returns:
+            Dataset with fixed count indices metadata
+        """
+        COUNT_INDICES = [
+            'summer_days', 'hot_days', 'ice_days', 'frost_days',
+            'tropical_nights', 'consecutive_frost_days',
+            'frost_season_length', 'frost_free_season_length',
+            'tx90p', 'tx10p', 'tn90p', 'tn10p',
+            'warm_spell_duration_index', 'cold_spell_duration_index',
+            'heat_wave_index'
+        ]
+
+        for idx_name in COUNT_INDICES:
+            if idx_name in ds.data_vars:
+                original_units = ds[idx_name].attrs.get('units', 'days')
+
+                # Only fix if units='days' (the problematic case)
+                if original_units == 'days':
+                    # Change to dimensionless to prevent timedelta encoding
+                    ds[idx_name].attrs['units'] = '1'
+                    ds[idx_name].attrs['comments'] = f'Count of days (dimensionless to avoid CF timedelta encoding). Original units: {original_units}'
+
+                    logger.debug(f"Fixed {idx_name}: units='days' → units='1' (dimensionless)")
+
+        return ds
 
     def process_time_chunk(
         self,
@@ -590,6 +627,10 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
 
             # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
             tile_ds = xr.Dataset(tile_indices)
+
+            # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
+            tile_ds = self.fix_count_indices(tile_ds)
+
             tile_file = output_dir / f'temperature_indices_{start_year}_{end_year}_tile_{tile_name}.nc'
             logger.info(f"  Saving tile {tile_name} to {tile_file}...")
 
@@ -638,15 +679,18 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             # West + East
             merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
 
+        # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
+        merged_ds = self.fix_count_indices(merged_ds)
+
         # Add metadata
         merged_ds.attrs['creation_date'] = datetime.now().isoformat()
-        merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v5.0 (Parallel Spatial Tiling)'
+        merged_ds.attrs['software'] = 'xclim-timber temperature pipeline v5.1 (Fixed timedelta encoding bug)'
         merged_ds.attrs['time_range'] = f'{start_year}-{end_year}'
         merged_ds.attrs['indices_count'] = len(merged_ds.data_vars)
         merged_ds.attrs['phase'] = 'Phase 9: Temperature Variability (+2 indices, total 35)'
         merged_ds.attrs['baseline_period'] = '1981-2000'
         merged_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
-        merged_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices use baseline percentiles.'
+        merged_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices use baseline percentiles. Count indices stored as dimensionless (units=1) to prevent CF timedelta encoding.'
 
         # Save merged dataset (compute in chunks to avoid OOM)
         logger.info(f"Saving merged dataset to {output_file}...")
