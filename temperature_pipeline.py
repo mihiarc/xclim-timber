@@ -642,8 +642,6 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
             logger.info(f"Processing with parallel spatial tiling ({self.n_tiles} tiles)")
 
             tiles = self._get_spatial_tiles(combined_ds)
-            # Fix #72: Use thread-safe Queue instead of list
-            tile_files_queue = Queue()
 
             def process_and_save_tile(tile_info):
                 """Process and save a single tile (thread-safe)."""
@@ -676,7 +674,8 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
                 return tile_file
 
             # Process all tiles in parallel using ThreadPoolExecutor
-            # Fix #72: Use dict to maintain tile order (thread-safe with lock)
+            # Fix #72: Use dict+lock to maintain tile order (thread-safe)
+            # Note: Queue was considered but loses insertion order, causing concatenation bugs
             tile_files_dict = {}
             tile_files_lock = threading.Lock()
 
@@ -809,6 +808,14 @@ See docs/BASELINE_DOCUMENTATION.md for more information.
                     logger.debug("Closed main Zarr dataset")
                 except Exception as e:
                     logger.warning(f"Failed to close main dataset: {e}")
+
+            # Close combined dataset (view of main dataset)
+            if combined_ds is not None:
+                try:
+                    combined_ds.close()
+                    logger.debug("Closed combined dataset")
+                except Exception as e:
+                    logger.warning(f"Failed to close combined dataset: {e}")
 
             # Close tile datasets
             for tile_ds in tile_datasets:
