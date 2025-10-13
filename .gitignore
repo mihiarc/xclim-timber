@@ -79,3 +79,7 @@ tmp/
 
 # Archived legacy code
 archive/
+# Logs (keep structure, ignore contents except archive)
+logs/*
+!logs/.gitkeep
+!logs/archive/
