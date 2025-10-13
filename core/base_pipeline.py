@@ -58,7 +58,6 @@ class BasePipeline(ABC):
         self.chunk_config = chunk_config or self._default_chunk_config()
         self.chunk_years = chunk_years
         self.enable_dashboard = enable_dashboard
-        self.client = None
 
     @staticmethod
     def _default_chunk_config() -> Dict[str, int]:
@@ -78,12 +77,6 @@ class BasePipeline(ABC):
         """
         logger.info("Using Dask threaded scheduler (no distributed client for memory efficiency)")
 
-    def close(self):
-        """Clean up resources."""
-        if self.client:
-            self.client.close()
-            self.client = None
-
     @abstractmethod
     def calculate_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
         """
@@ -97,7 +90,27 @@ class BasePipeline(ABC):
             Dictionary mapping index name to calculated DataArray
             e.g., {'tg_mean': tg_mean_array, 'frost_days': frost_days_array}
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement calculate_indices()"
+        )
+
+    def _calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
+        """
+        Calculate all indices with optional spatial tiling support.
+
+        This method provides an extension point for pipelines that need spatial tiling
+        (e.g., temperature pipeline with 2x2 or 4x4 tiling).
+
+        Default implementation calls calculate_indices() directly.
+        Override in subclasses for spatial tiling or other custom workflows.
+
+        Args:
+            datasets: Dictionary mapping data type to xarray Dataset
+
+        Returns:
+            Dictionary mapping index name to calculated DataArray
+        """
+        return self.calculate_indices(datasets)
 
     def _load_zarr_data(
         self,
@@ -221,11 +234,17 @@ class BasePipeline(ABC):
             # Default encoding: compression for all variables
             encoding = encoding_config or {}
             if not encoding_config:
+                # Calculate dynamic chunk sizes based on dataset dimensions
+                # Use 1/9 of each spatial dimension for reasonable chunk sizes
+                time_chunk = min(result_ds.sizes.get('time', 1), 1)
+                lat_chunk = max(result_ds.sizes.get('lat', 69) // 9, 1)
+                lon_chunk = max(result_ds.sizes.get('lon', 281) // 9, 1)
+
                 for var_name in result_ds.data_vars:
                     encoding[var_name] = {
                         'zlib': True,
                         'complevel': 4,
-                        'chunksizes': (1, 69, 281)  # Annual chunks
+                        'chunksizes': (time_chunk, lat_chunk, lon_chunk)
                     }
 
             result_ds.to_netcdf(
@@ -278,9 +297,9 @@ class BasePipeline(ABC):
         if hasattr(self, '_preprocess_datasets'):
             datasets = self._preprocess_datasets(datasets)
 
-        # Calculate indices (subclass implementation)
+        # Calculate indices (subclass implementation with optional spatial tiling)
         logger.info("Calculating indices...")
-        all_indices = self.calculate_indices(datasets)
+        all_indices = self._calculate_all_indices(datasets)
         logger.info(f"  Calculated {len(all_indices)} indices")
 
         if not all_indices:
@@ -374,7 +393,5 @@ class BasePipeline(ABC):
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
             raise
-        finally:
-            self.close()
 
         return output_files

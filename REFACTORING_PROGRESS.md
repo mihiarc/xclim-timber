@@ -1,8 +1,49 @@
 # Pipeline Refactoring Progress Report
 
 **Date:** 2025-10-13
-**Status:** Core Infrastructure Complete (Issues #1-2) ✅
+**Status:** Core Infrastructure Complete + Critical Fixes Applied (Issues #1-2) ✅
 **Next:** Temperature Pipeline Refactoring (Issue #3)
+
+---
+
+## 🔧 Critical Fixes Applied (Code & Architecture Review)
+
+After comprehensive code and architecture reviews, **5 critical issues** were identified and fixed:
+
+### Code Review Fixes (3 critical bugs)
+
+1. **Abstract method implementation** (base_pipeline.py:100)
+   - **Issue:** Used `pass` instead of `NotImplementedError`
+   - **Fix:** Changed to `raise NotImplementedError(f"{self.__class__.__name__} must implement calculate_indices()")`
+   - **Impact:** Provides clear error messages if subclass forgets to implement
+
+2. **Dead client cleanup code** (base_pipeline.py:81-85)
+   - **Issue:** `close()` method tried to close never-created Dask client
+   - **Fix:** Removed `self.client` attribute and `close()` method entirely
+   - **Impact:** Eliminated dead code, cleaner architecture
+
+3. **Hardcoded chunk sizes** (base_pipeline.py:228)
+   - **Issue:** Used fixed `(1, 69, 281)` chunks regardless of dataset dimensions
+   - **Fix:** Dynamic calculation based on actual dataset dimensions: `(time_chunk, lat_chunk, lon_chunk)`
+   - **Impact:** Works correctly with any dataset size
+
+### Architecture Review Fixes (2 critical design flaws)
+
+4. **Temperature pipeline incompatibility** (base_pipeline.py:283)
+   - **Issue:** `process_time_chunk()` called `calculate_indices()` directly, blocking spatial tiling
+   - **Fix:** Added `_calculate_all_indices()` extension point that delegates to `calculate_indices()` by default
+   - **Impact:** Temperature pipeline can now override for spatial tiling support
+
+5. **Baseline memory bomb** (baseline_loader.py:70)
+   - **Issue:** Loaded entire 10.7GB baseline file into memory without chunking
+   - **Fix:** Added `chunks='auto'` to `xr.open_dataset()` call
+   - **Impact:** Lazy loading prevents memory exhaustion
+
+**Verification:**
+```bash
+python3 -c "from core import BasePipeline, PipelineConfig, BaselineLoader, PipelineCLI; print('✓ Core module imports successfully')"
+# Result: ✓ Core module imports successfully
+```
 
 ---
 

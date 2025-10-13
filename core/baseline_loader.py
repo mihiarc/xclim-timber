@@ -67,7 +67,8 @@ The file should contain temperature, precipitation, and multivariate percentiles
 
         try:
             logger.info(f"Loading baseline percentiles from {self.baseline_file}")
-            ds = xr.open_dataset(self.baseline_file)
+            # Use chunked loading to avoid loading entire 10.7GB file into memory
+            ds = xr.open_dataset(self.baseline_file, chunks='auto')
 
             # Validate baseline period
             baseline_period = ds.attrs.get('baseline_period')
@@ -79,7 +80,7 @@ The file should contain temperature, precipitation, and multivariate percentiles
 
             # Cache for future use
             self._baseline_cache = ds
-            logger.info(f"  Loaded baseline file with {len(ds.data_vars)} variables")
+            logger.info(f"  Loaded baseline file with {len(ds.data_vars)} variables (chunked for memory efficiency)")
 
             return ds
 
