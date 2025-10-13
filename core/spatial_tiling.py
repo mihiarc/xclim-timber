@@ -389,18 +389,24 @@ class SpatialTilingMixin:
         # Merge tiles
         merged_ds = self._merge_tiles(tile_files, expected_dims)
 
-        # Clean up tile files
+        # Compute merged dataset to materialize data before tile cleanup
+        # Without this, lazy-loaded arrays will be inaccessible after tile deletion
+        logger.info("  Computing merged dataset...")
+        merged_ds_computed = merged_ds.compute()
+
+        # Clean up tile files (safe now that data is materialized)
         self._cleanup_tile_files(tile_files)
 
         # Extract indices as dictionary
-        all_indices = {var: merged_ds[var] for var in merged_ds.data_vars}
+        all_indices = {var: merged_ds_computed[var] for var in merged_ds_computed.data_vars}
 
-        # Explicitly close merged dataset to prevent memory leak
+        # Close computed dataset to free memory
         try:
             merged_ds.close()
+            merged_ds_computed.close()
         except Exception as e:
-            logger.warning(f"Failed to close merged dataset: {e}")
-        del merged_ds
+            logger.warning(f"Failed to close merged datasets: {e}")
+        del merged_ds, merged_ds_computed
 
         return all_indices
 

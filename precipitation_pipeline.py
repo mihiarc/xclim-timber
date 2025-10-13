@@ -5,153 +5,112 @@ Efficiently processes precipitation-based climate indices using Zarr streaming.
 Calculates 13 precipitation indices including extremes, consecutive events, intensity, and enhanced analysis (Phase 6).
 """
 
-import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
-import warnings
+from typing import Dict
+import threading
+
 import xarray as xr
 import xclim.indicators.atmos as atmos
-from dask.distributed import Client
-import dask
-import psutil
-import os
-from datetime import datetime
 
-# Suppress common warnings that don't affect functionality
-warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
-warnings.filterwarnings('ignore', category=UserWarning, message='.*specified chunks.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
-warnings.filterwarnings('ignore', category=FutureWarning, message='.*return type of.*Dataset.dims.*')
+from core import BasePipeline, PipelineConfig, BaselineLoader, PipelineCLI, SpatialTilingMixin
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 
-class PrecipitationPipeline:
+class PrecipitationPipeline(BasePipeline, SpatialTilingMixin):
     """
     Memory-efficient precipitation indices pipeline using Zarr streaming.
     Processes 13 precipitation indices without loading full dataset into memory.
 
     Indices:
-    - Basic: prcptot, rx1day, rx5day, sdii, cdd, cwd (6 indices)
-    - Extreme (percentile-based): r95p, r99p (2 indices)
-    - Threshold: r10mm, r20mm (2 indices)
-    - Enhanced (Phase 6): dry_days, wetdays, wetdays_prop (3 indices)
+    - Basic (6): prcptot, rx1day, rx5day, sdii, cdd, cwd
+    - Extreme (2): r95p, r99p (percentile-based using 1981-2000 baseline)
+    - Threshold (2): r10mm, r20mm (fixed thresholds)
+    - Enhanced Phase 6 (3): dry_days, wetdays, wetdays_prop
     """
 
-    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False):
+    def __init__(self, n_tiles: int = 4, **kwargs):
         """
-        Initialize the pipeline.
+        Initialize the pipeline with parallel spatial tiling.
 
         Args:
-            chunk_years: Number of years to process in each temporal chunk
-            enable_dashboard: Whether to enable Dask dashboard
+            n_tiles: Number of spatial tiles (2, 4, or 8, default: 4 for quadrants)
+            **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
-        self.chunk_years = chunk_years
-        self.enable_dashboard = enable_dashboard
-        self.client = None
+        # Initialize BasePipeline
+        BasePipeline.__init__(
+            self,
+            zarr_paths={'precipitation': PipelineConfig.PRECIP_ZARR},
+            chunk_config=PipelineConfig.DEFAULT_CHUNKS,
+            **kwargs
+        )
 
-        # Zarr store path for precipitation data
-        self.zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation'
-
-        # Optimal chunk configuration (aligned with dimensions)
-        self.chunk_config = {
-            'time': 365,  # One year of daily data
-            'lat': 103,   # 621 / 103 = 6 chunks (smaller for less memory)
-            'lon': 201    # 1405 / 201 = 7 chunks (smaller for less memory)
-        }
+        # Initialize SpatialTilingMixin
+        SpatialTilingMixin.__init__(self, n_tiles=n_tiles)
 
         # Load baseline percentiles for extreme indices
-        self.baseline_file = Path('data/baselines/baseline_percentiles_1981_2000.nc')
-        self.baseline_percentiles = self._load_baseline_percentiles()
+        self.baseline_loader = BaselineLoader()
+        self.baselines = self.baseline_loader.get_precipitation_baselines()
 
-    def setup_dask_client(self):
-        """Initialize Dask client with memory limits."""
-        # Use threaded scheduler instead of distributed for lower memory overhead
-        logger.info("Using Dask threaded scheduler (no distributed client for memory efficiency)")
+        # Thread lock for baseline access (fixes data race in parallel tile processing)
+        self.baseline_lock = threading.Lock()
 
-    def close(self):
-        """Clean up resources."""
-        if self.client:
-            self.client.close()
-            self.client = None
-
-    def _load_baseline_percentiles(self):
+    def _preprocess_datasets(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
-        Load pre-calculated baseline percentiles for extreme indices.
+        Preprocess precipitation datasets (rename variables, fix units).
+
+        Args:
+            datasets: Dictionary with 'precipitation' dataset
 
         Returns:
-            Dict of baseline percentile DataArrays
-
-        Raises:
-            FileNotFoundError: If baseline file doesn't exist
-            RuntimeError: If baseline file is corrupted or invalid
+            Preprocessed datasets dictionary
         """
-        if not self.baseline_file.exists():
-            error_msg = f"""
-ERROR: Baseline percentiles file not found at {self.baseline_file}
+        precip_ds = datasets['precipitation']
 
-Please generate baseline percentiles first:
-  python calculate_baseline_percentiles.py
+        # Rename precipitation variable for xclim compatibility
+        precip_ds = self._rename_variables(precip_ds, PipelineConfig.PRECIP_RENAME_MAP)
 
-This is a one-time operation that takes ~15-25 minutes.
-The file should contain both temperature and precipitation percentiles.
-"""
-            raise FileNotFoundError(error_msg)
+        # Fix units for precipitation variable
+        precip_ds = self._fix_units(precip_ds, PipelineConfig.PRECIP_UNIT_FIXES)
 
-        try:
-            logger.info(f"Loading baseline percentiles from {self.baseline_file}")
-            ds = xr.open_dataset(self.baseline_file)
+        # Add CF standard name
+        if 'pr' in precip_ds:
+            precip_ds['pr'].attrs['standard_name'] = PipelineConfig.CF_STANDARD_NAMES.get(
+                'pr', 'precipitation_flux'
+            )
 
-            # Validate baseline period
-            baseline_period = ds.attrs.get('baseline_period')
-            if baseline_period != '1981-2000':
-                logger.warning(
-                    f"Baseline period mismatch: expected '1981-2000', got '{baseline_period}'. "
-                    f"Results may not be comparable to standard climate indices."
-                )
+        datasets['precipitation'] = precip_ds
+        return datasets
 
-            # Extract and validate precipitation percentiles
-            percentiles = {}
-            required_vars = ['pr95p_threshold', 'pr99p_threshold']
+    def calculate_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
+        """
+        Calculate all precipitation indices for a single spatial region.
 
-            for var in required_vars:
-                if var not in ds:
-                    logger.warning(f"Missing expected variable: {var}")
-                    continue
+        Combines four calculation methods:
+        - Basic precipitation indices (6 indices)
+        - Extreme percentile-based indices (2 indices)
+        - Threshold indices (2 indices)
+        - Enhanced precipitation indices (3 indices)
 
-                data = ds[var]
+        Args:
+            datasets: Dictionary with 'precipitation' dataset
 
-                # Validate dimensions
-                if 'dayofyear' not in data.dims:
-                    raise ValueError(f"{var} missing required 'dayofyear' dimension")
+        Returns:
+            Dictionary of calculated indices
+        """
+        ds = datasets['precipitation']
 
-                # Validate data integrity
-                if data.isnull().all():
-                    raise ValueError(f"{var} contains all NaN values - baseline may be corrupted")
+        # Calculate all four types of indices
+        basic_indices = self.calculate_precipitation_indices(ds)
+        extreme_indices = self.calculate_extreme_indices(ds, self.baselines)
+        threshold_indices = self.calculate_threshold_indices(ds)
+        enhanced_indices = self.calculate_enhanced_precipitation_indices(ds)
 
-                percentiles[var] = data
-                logger.debug(f"  Loaded {var}: shape={data.shape}")
-
-            if not percentiles:
-                logger.warning("No precipitation percentiles found in baseline file")
-                logger.warning("Extreme indices (r95p, r99p) will not be calculated")
-
-            return percentiles
-
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to read baseline file: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Error loading baseline percentiles: {e}")
+        # Combine all indices
+        all_indices = {**basic_indices, **extreme_indices, **threshold_indices, **enhanced_indices}
+        return all_indices
 
     def calculate_precipitation_indices(self, ds: xr.Dataset) -> dict:
         """
@@ -191,7 +150,7 @@ The file should contain both temperature and precipitation percentiles.
 
         return indices
 
-    def calculate_extreme_indices(self, ds: xr.Dataset) -> dict:
+    def calculate_extreme_indices(self, ds: xr.Dataset, baseline_percentiles: dict) -> dict:
         """
         Calculate percentile-based extreme precipitation indices.
 
@@ -199,6 +158,7 @@ The file should contain both temperature and precipitation percentiles.
 
         Args:
             ds: Dataset with precipitation variable (pr)
+            baseline_percentiles: Dictionary of baseline percentile thresholds
 
         Returns:
             Dictionary of calculated extreme indices
@@ -209,26 +169,26 @@ The file should contain both temperature and precipitation percentiles.
             logger.warning("No precipitation variable found for extreme indices")
             return indices
 
-        if not self.baseline_percentiles:
+        if not baseline_percentiles:
             logger.warning("No baseline percentiles loaded, skipping extreme indices")
             return indices
 
         # r95p: Very wet days (days above 95th percentile of wet days)
-        if 'pr95p_threshold' in self.baseline_percentiles:
+        if 'pr95p_threshold' in baseline_percentiles:
             logger.info("  - Calculating r95p (very wet days)...")
             indices['r95p'] = atmos.days_over_precip_doy_thresh(
                 pr=ds.pr,
-                pr_per=self.baseline_percentiles['pr95p_threshold'],
+                pr_per=baseline_percentiles['pr95p_threshold'],
                 thresh='1 mm/day',
                 freq='YS'
             )
 
         # r99p: Extremely wet days (days above 99th percentile of wet days)
-        if 'pr99p_threshold' in self.baseline_percentiles:
+        if 'pr99p_threshold' in baseline_percentiles:
             logger.info("  - Calculating r99p (extremely wet days)...")
             indices['r99p'] = atmos.days_over_precip_doy_thresh(
                 pr=ds.pr,
-                pr_per=self.baseline_percentiles['pr99p_threshold'],
+                pr_per=baseline_percentiles['pr99p_threshold'],
                 thresh='1 mm/day',
                 freq='YS'
             )
@@ -319,284 +279,173 @@ The file should contain both temperature and precipitation percentiles.
 
         return indices
 
-
-    def process_time_chunk(
+    def _process_single_tile(
         self,
-        start_year: int,
-        end_year: int,
-        output_dir: Path
-    ) -> Path:
+        ds: xr.Dataset,
+        lat_slice: slice,
+        lon_slice: slice,
+        tile_name: str
+    ) -> Dict[str, xr.DataArray]:
         """
-        Process a single time chunk.
+        Process a single spatial tile (precipitation-specific override).
+
+        This override handles baseline percentiles subsetting, which is specific
+        to precipitation pipeline's extreme indices.
 
         Args:
-            start_year: Start year for this chunk
-            end_year: End year for this chunk
-            output_dir: Output directory
+            ds: Full dataset
+            lat_slice: Latitude slice for this tile
+            lon_slice: Longitude slice for this tile
+            tile_name: Name of this tile (for logging)
 
         Returns:
-            Path to output file
+            Dictionary of calculated indices for this tile
         """
-        logger.info(f"\nProcessing chunk: {start_year}-{end_year}")
+        logger.info(f"  Processing tile: {tile_name}")
 
-        # Track memory
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Initial memory: {initial_memory:.1f} MB")
+        # Select spatial subset
+        tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
 
-        # Load precipitation data
-        logger.info("Loading precipitation data...")
-        ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
+        # Subset baseline percentiles to match tile
+        # Use lock to prevent concurrent access to shared baseline data
+        with self.baseline_lock:
+            tile_baselines = {
+                key: baseline.isel(lat=lat_slice, lon=lon_slice)
+                for key, baseline in self.baselines.items()
+            }
 
-        # Select time range
-        combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
+        # Calculate indices for this tile
+        basic_indices = self.calculate_precipitation_indices(tile_ds)
+        extreme_indices = self.calculate_extreme_indices(tile_ds, tile_baselines)
+        threshold_indices = self.calculate_threshold_indices(tile_ds)
+        enhanced_indices = self.calculate_enhanced_precipitation_indices(tile_ds)
 
-        # Rename precipitation variable for xclim compatibility
-        rename_map = {
-            'ppt': 'pr'  # PRISM uses 'ppt' for precipitation
-        }
+        all_indices = {**basic_indices, **extreme_indices, **threshold_indices, **enhanced_indices}
+        return all_indices
 
-        for old_name, new_name in rename_map.items():
-            if old_name in combined_ds:
-                combined_ds = combined_ds.rename({old_name: new_name})
-                logger.debug(f"Renamed {old_name} to {new_name}")
-
-        # Fix units for precipitation variable
-        unit_fixes = {
-            'pr': 'mm/day'  # Daily precipitation total
-        }
-
-        for var_name, unit in unit_fixes.items():
-            if var_name in combined_ds:
-                combined_ds[var_name].attrs['units'] = unit
-                combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
-
-        # Calculate precipitation indices
-        logger.info("Calculating precipitation indices...")
-
-        # Calculate basic indices
-        basic_indices = self.calculate_precipitation_indices(combined_ds)
-
-        # Calculate extreme indices (percentile-based)
-        extreme_indices = self.calculate_extreme_indices(combined_ds)
-
-        # Calculate threshold indices
-        threshold_indices = self.calculate_threshold_indices(combined_ds)
-
-        # Calculate Phase 6 indices - Enhanced Precipitation Analysis
-        enhanced_indices = self.calculate_enhanced_precipitation_indices(combined_ds)
-
-        # Merge all indices
-        all_indices = {
-            **basic_indices,
-            **extreme_indices,
-            **threshold_indices,
-            **enhanced_indices
-        }
-        logger.info(f"  Calculated {len(all_indices)} precipitation indices total")
-        logger.info(f"    Basic: {len(basic_indices)}, Extreme: {len(extreme_indices)}, Threshold: {len(threshold_indices)}, Enhanced (Phase 6): {len(enhanced_indices)}")
-
-        if not all_indices:
-            logger.warning("No indices calculated")
-            return None
-
-        # Combine indices into dataset
-        logger.info(f"Combining {len(all_indices)} indices into dataset...")
-        result_ds = xr.Dataset(all_indices)
-
-        # Add metadata
-        result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber precipitation pipeline v4.0 (Phase 6)'
-        result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-        result_ds.attrs['indices_count'] = len(all_indices)
-        result_ds.attrs['baseline_period'] = '1981-2000'
-        result_ds.attrs['phase'] = 'Phase 6: Enhanced Precipitation Analysis (+3 indices)'
-        result_ds.attrs['note'] = 'Extreme indices (r95p, r99p) use wet-day percentiles from baseline period. Phase 6 adds dry_days, wetdays, wetdays_prop.'
-
-        # Save output
-        output_file = output_dir / f'precipitation_indices_{start_year}_{end_year}.nc'
-        logger.info(f"Saving to {output_file}...")
-
-        with dask.config.set(scheduler='threads'):
-            encoding = {}
-            for var_name in result_ds.data_vars:
-                encoding[var_name] = {
-                    'zlib': True,
-                    'complevel': 4,
-                    'chunksizes': (1, 69, 281)  # Aligned chunks for storage
-                }
-
-            result_ds.to_netcdf(
-                output_file,
-                engine='netcdf4',
-                encoding=encoding
-            )
-
-        # Report memory usage
-        final_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
-
-        # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        logger.info(f"Output file size: {file_size_mb:.2f} MB")
-
-        return output_file
-
-    def _get_standard_name(self, var_name: str) -> str:
-        """Get CF-compliant standard name for variable."""
-        standard_names = {
-            'pr': 'precipitation_flux'
-        }
-        return standard_names.get(var_name, '')
-
-    def run(
-        self,
-        start_year: int,
-        end_year: int,
-        output_dir: str = './outputs'
-    ) -> List[Path]:
+    def _calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
         """
-        Run the pipeline for specified years.
+        Override to implement spatial tiling for precipitation indices.
+
+        Uses the SpatialTilingMixin to process the dataset in parallel spatial tiles
+        for better memory efficiency and performance, then merges the results.
 
         Args:
+            datasets: Dictionary with 'precipitation' dataset
+
+        Returns:
+            Dictionary mapping index name to calculated DataArray
+        """
+        ds = datasets['precipitation']
+
+        # Define expected dimensions for validation
+        # PRISM CONUS dimensions: 621 lat × 1405 lon
+        # Time dimension after annual aggregation (freq='YS'):
+        #   - Single year: time=1
+        #   - Multiple years: time=num_years
+        num_years = len(ds.time.groupby('time.year').groups)
+        expected_dims = {
+            'time': num_years,  # Number of years (aggregated to annual)
+            'lat': 621,
+            'lon': 1405
+        }
+
+        # Create temporary directory for tiles
+        output_dir = Path('./outputs')
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use the mixin's spatial tiling functionality
+        all_indices = self.process_with_spatial_tiling(
+            ds=ds,
+            output_dir=output_dir,
+            expected_dims=expected_dims
+        )
+
+        return all_indices
+
+    def _add_global_metadata(
+        self,
+        result_ds: xr.Dataset,
+        start_year: int,
+        end_year: int,
+        pipeline_name: str,
+        indices_count: int,
+        additional_attrs: dict = None
+    ) -> xr.Dataset:
+        """
+        Override to add precipitation-specific metadata.
+
+        Args:
+            result_ds: Result dataset
             start_year: Start year
             end_year: End year
-            output_dir: Output directory path
+            pipeline_name: Name of the pipeline
+            indices_count: Number of indices calculated
+            additional_attrs: Additional attributes to add
 
         Returns:
-            List of output file paths
+            Dataset with global metadata
         """
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Call base implementation
+        result_ds = super()._add_global_metadata(
+            result_ds, start_year, end_year, pipeline_name, indices_count, additional_attrs
+        )
 
-        logger.info("=" * 60)
-        logger.info("PRECIPITATION INDICES PIPELINE")
-        logger.info("=" * 60)
-        logger.info(f"Period: {start_year}-{end_year}")
-        logger.info(f"Output: {output_path}")
-        logger.info(f"Chunk size: {self.chunk_years} years")
+        # Add precipitation-specific metadata
+        result_ds.attrs['phase'] = 'Phase 6: Enhanced Precipitation Analysis (+3 indices, total 13)'
+        result_ds.attrs['baseline_period'] = PipelineConfig.BASELINE_PERIOD
+        result_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
+        result_ds.attrs['note'] = 'Processed with parallel spatial tiling for optimal memory and performance. Extreme indices (r95p, r99p) use wet-day percentiles from baseline period. Phase 6 adds dry_days, wetdays, wetdays_prop.'
 
-        # Setup Dask
-        self.setup_dask_client()
-
-        output_files = []
-
-        try:
-            # Process in temporal chunks
-            current_year = start_year
-            while current_year <= end_year:
-                chunk_end = min(current_year + self.chunk_years - 1, end_year)
-
-                output_file = self.process_time_chunk(
-                    current_year,
-                    chunk_end,
-                    output_path
-                )
-
-                if output_file:
-                    output_files.append(output_file)
-
-                current_year = chunk_end + 1
-
-            logger.info("=" * 60)
-            logger.info(f"✓ Pipeline complete! Generated {len(output_files)} files")
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.error(f"Pipeline failed: {e}")
-            raise
-        finally:
-            self.close()
-
-        return output_files
+        return result_ds
 
 
 def main():
     """Main entry point with command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Precipitation Indices Pipeline: Calculate 13 precipitation-based climate indices (Phase 6)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Indices calculated:
+    indices_list = """
   Basic (6): prcptot, rx1day, rx5day, sdii, cdd, cwd
   Extreme (2): r95p, r99p (percentile-based using 1981-2000 baseline)
   Threshold (2): r10mm, r20mm (fixed thresholds)
   Enhanced Phase 6 (3): dry_days, wetdays, wetdays_prop
+"""
 
-Examples:
-  # Process default period (1981-2024)
-  python precipitation_pipeline.py
+    examples = """
+  # Process with 2 tiles (east/west split)
+  python precipitation_pipeline.py --n-tiles 2
+
+  # Process with 4 tiles (quadrants, default)
+  python precipitation_pipeline.py --n-tiles 4
 
   # Process single year
   python precipitation_pipeline.py --start-year 2023 --end-year 2023
+"""
 
-  # Process with custom output directory
-  python precipitation_pipeline.py --output-dir ./results
-
-Note: Requires baseline percentiles file. Run first if missing:
-  python calculate_baseline_percentiles.py
-        """
+    parser = PipelineCLI.create_parser(
+        "Precipitation Indices",
+        "Calculate 13 precipitation-based climate indices (Phase 6)",
+        indices_list,
+        examples
     )
 
     parser.add_argument(
-        '--start-year',
+        '--n-tiles',
         type=int,
-        default=1981,
-        help='Start year for processing (default: 1981)'
-    )
-
-    parser.add_argument(
-        '--end-year',
-        type=int,
-        default=2024,
-        help='End year for processing (default: 2024)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default='./outputs',
-        help='Output directory for results (default: ./outputs)'
-    )
-
-    parser.add_argument(
-        '--chunk-years',
-        type=int,
-        default=1,
-        help='Number of years to process per chunk (default: 1 for memory efficiency)'
-    )
-
-    parser.add_argument(
-        '--dashboard',
-        action='store_true',
-        help='Enable Dask dashboard on port 8787'
-    )
-
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-
-    parser.add_argument(
-        '--show-warnings',
-        action='store_true',
-        help='Show all warnings (default: suppressed)'
+        default=4,
+        choices=[2, 4, 8],
+        help='Number of spatial tiles: 2 (east/west), 4 (quadrants), or 8 (octants) (default: 4)'
     )
 
     args = parser.parse_args()
 
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Handle common setup (logging, warnings)
+    PipelineCLI.handle_common_setup(args)
 
-    # Re-enable warnings if requested
-    if args.show_warnings:
-        warnings.resetwarnings()
-        logger.info("Warnings enabled")
+    # Validate year range
+    PipelineCLI.validate_years(args.start_year, args.end_year)
 
     # Create and run pipeline
     pipeline = PrecipitationPipeline(
+        n_tiles=args.n_tiles,
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard
     )
