@@ -10,22 +10,17 @@ import sys
 from pathlib import Path
 from typing import Dict
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import xarray as xr
 import xclim.indicators.atmos as atmos
 import xclim.indices as xi
-import dask
 
-from core import BasePipeline, PipelineConfig, BaselineLoader, PipelineCLI
+from core import BasePipeline, PipelineConfig, BaselineLoader, PipelineCLI, SpatialTilingMixin
 
 logger = logging.getLogger(__name__)
 
-# Thread lock for NetCDF file writing (HDF5/NetCDF4 is not fully thread-safe)
-netcdf_write_lock = threading.Lock()
 
-
-class TemperaturePipeline(BasePipeline):
+class TemperaturePipeline(BasePipeline, SpatialTilingMixin):
     """
     Memory-efficient temperature indices pipeline using Zarr streaming.
     Processes 35 temperature indices without loading full dataset into memory.
@@ -57,16 +52,23 @@ class TemperaturePipeline(BasePipeline):
             n_tiles: Number of spatial tiles (2 or 4, default: 4 for quadrants)
             **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
-        super().__init__(
+        # Initialize BasePipeline
+        BasePipeline.__init__(
+            self,
             zarr_paths={'temperature': PipelineConfig.TEMP_ZARR},
             chunk_config=PipelineConfig.DEFAULT_CHUNKS,
             **kwargs
         )
-        self.n_tiles = n_tiles
+
+        # Initialize SpatialTilingMixin
+        SpatialTilingMixin.__init__(self, n_tiles=n_tiles)
 
         # Load baseline percentiles for extreme indices
         self.baseline_loader = BaselineLoader()
         self.baselines = self.baseline_loader.get_temperature_baselines()
+
+        # Thread lock for baseline access (fixes data race in parallel tile processing)
+        self.baseline_lock = threading.Lock()
 
     def _preprocess_datasets(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -463,58 +465,24 @@ class TemperaturePipeline(BasePipeline):
             logger.error(f"Failed to fix count indices: {e}")
             raise
 
-    def _get_spatial_tiles(self, ds: xr.Dataset) -> list:
-        """
-        Calculate spatial tile boundaries.
-
-        Args:
-            ds: Dataset to tile
-
-        Returns:
-            List of tuples (lat_slice, lon_slice, tile_name)
-        """
-        lat_vals = ds.lat.values
-        lon_vals = ds.lon.values
-
-        lat_mid = len(lat_vals) // 2
-        lon_mid = len(lon_vals) // 2
-
-        if self.n_tiles == 2:
-            # Split east-west
-            tiles = [
-                (slice(None), slice(0, lon_mid), "west"),
-                (slice(None), slice(lon_mid, None), "east")
-            ]
-        elif self.n_tiles == 4:
-            # Split into quadrants (NW, NE, SW, SE)
-            tiles = [
-                (slice(0, lat_mid), slice(0, lon_mid), "northwest"),
-                (slice(0, lat_mid), slice(lon_mid, None), "northeast"),
-                (slice(lat_mid, None), slice(0, lon_mid), "southwest"),
-                (slice(lat_mid, None), slice(lon_mid, None), "southeast")
-            ]
-        else:
-            raise ValueError(f"n_tiles must be 2 or 4, got {self.n_tiles}")
-
-        return tiles
-
-    def _process_spatial_tile(
+    def _process_single_tile(
         self,
         ds: xr.Dataset,
         lat_slice: slice,
         lon_slice: slice,
-        tile_name: str,
-        baseline_percentiles: dict
-    ) -> dict:
+        tile_name: str
+    ) -> Dict[str, xr.DataArray]:
         """
-        Process a single spatial tile.
+        Process a single spatial tile (temperature-specific override).
+
+        This override handles baseline percentiles subsetting, which is specific
+        to temperature pipeline's extreme indices.
 
         Args:
             ds: Full dataset
             lat_slice: Latitude slice for this tile
             lon_slice: Longitude slice for this tile
             tile_name: Name of this tile (for logging)
-            baseline_percentiles: Baseline percentile thresholds for extreme indices
 
         Returns:
             Dictionary of calculated indices for this tile
@@ -524,13 +492,15 @@ class TemperaturePipeline(BasePipeline):
         # Select spatial subset
         tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
 
-        # Subset baseline percentiles to match tile (thread-safe - no shared state mutation)
-        tile_baselines = {
-            key: baseline.isel(lat=lat_slice, lon=lon_slice)
-            for key, baseline in baseline_percentiles.items()
-        }
+        # Subset baseline percentiles to match tile
+        # Use lock to prevent concurrent access to shared baseline data
+        with self.baseline_lock:
+            tile_baselines = {
+                key: baseline.isel(lat=lat_slice, lon=lon_slice)
+                for key, baseline in self.baselines.items()
+            }
 
-        # Calculate indices for this tile (passing baselines as parameter)
+        # Calculate indices for this tile
         basic_indices = self.calculate_temperature_indices(tile_ds)
         extreme_indices = self.calculate_extreme_indices(tile_ds, tile_baselines)
         advanced_indices = self.calculate_advanced_temperature_indices(tile_ds)
@@ -542,8 +512,8 @@ class TemperaturePipeline(BasePipeline):
         """
         Override to implement spatial tiling for temperature indices.
 
-        This method processes the dataset in parallel spatial tiles for better
-        memory efficiency and performance, then merges the results.
+        Uses the SpatialTilingMixin to process the dataset in parallel spatial tiles
+        for better memory efficiency and performance, then merges the results.
 
         Args:
             datasets: Dictionary with 'temperature' dataset
@@ -551,130 +521,30 @@ class TemperaturePipeline(BasePipeline):
         Returns:
             Dictionary mapping index name to calculated DataArray
         """
-        combined_ds = datasets['temperature']
+        ds = datasets['temperature']
 
-        # Process tiles in parallel
-        logger.info(f"Processing with parallel spatial tiling ({self.n_tiles} tiles)")
-        tiles = self._get_spatial_tiles(combined_ds)
-
-        def process_and_save_tile(tile_info, output_dir):
-            """Process and save a single tile (thread-safe)."""
-            lat_slice, lon_slice, tile_name = tile_info
-            tile_indices = self._process_spatial_tile(
-                combined_ds, lat_slice, lon_slice, tile_name, self.baselines
-            )
-
-            # Save tile immediately (with lock to ensure thread-safe NetCDF writes)
-            tile_ds = xr.Dataset(tile_indices)
-
-            # Fix count indices to prevent timedelta encoding (CRITICAL FIX)
-            tile_ds = self.fix_count_indices(tile_ds)
-
-            tile_file = output_dir / f'temperature_indices_tile_{tile_name}.nc'
-            logger.info(f"  Saving tile {tile_name} to {tile_file}...")
-
-            # Use lock to prevent concurrent NetCDF writes (HDF5 library limitation)
-            with netcdf_write_lock:
-                with dask.config.set(scheduler='threads'):
-                    encoding = {}
-                    for var_name in tile_ds.data_vars:
-                        encoding[var_name] = {
-                            'zlib': True,
-                            'complevel': 4
-                        }
-                    tile_ds.to_netcdf(tile_file, engine='netcdf4', encoding=encoding)
-
-            del tile_indices, tile_ds  # Free memory
-            return tile_file
+        # Define expected dimensions for validation
+        # PRISM CONUS dimensions: 621 lat × 1405 lon
+        # Time dimension after annual aggregation (freq='YS'):
+        #   - Single year: time=1
+        #   - Multiple years: time=num_years
+        num_years = len(ds.time.groupby('time.year').groups)
+        expected_dims = {
+            'time': num_years,  # Number of years (aggregated to annual)
+            'lat': 621,
+            'lon': 1405
+        }
 
         # Create temporary directory for tiles
         output_dir = Path('./outputs')
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Process all tiles in parallel using ThreadPoolExecutor
-        tile_files_dict = {}
-        tile_files_lock = threading.Lock()
-
-        def process_and_save_tile_wrapper(tile_info):
-            """Wrapper to store result in dict with proper order."""
-            tile_file = process_and_save_tile(tile_info, output_dir)
-            tile_name = tile_info[2]
-            # Thread-safe dict update
-            with tile_files_lock:
-                tile_files_dict[tile_name] = tile_file
-            return tile_file
-
-        with ThreadPoolExecutor(max_workers=self.n_tiles) as executor:
-            future_to_tile = {executor.submit(process_and_save_tile_wrapper, tile): tile for tile in tiles}
-            for future in as_completed(future_to_tile):
-                tile_info = future_to_tile[future]
-                tile_name = tile_info[2]
-                try:
-                    future.result()
-                    logger.info(f"  ✓ Tile {tile_name} completed successfully")
-                except Exception as e:
-                    logger.error(f"  ✗ Tile {tile_name} failed: {e}")
-                    raise
-
-        # Verify we have the expected number of tiles
-        if len(tile_files_dict) != self.n_tiles:
-            raise ValueError(f"Expected {self.n_tiles} tile files, but got {len(tile_files_dict)}")
-
-        # Build tile_files list in correct order for concatenation
-        if self.n_tiles == 4:
-            tile_files = [
-                tile_files_dict['northwest'],
-                tile_files_dict['northeast'],
-                tile_files_dict['southwest'],
-                tile_files_dict['southeast']
-            ]
-        elif self.n_tiles == 2:
-            tile_files = [
-                tile_files_dict['west'],
-                tile_files_dict['east']
-            ]
-
-        # Merge tile files lazily using xarray
-        logger.info("Merging tile files...")
-        tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
-
-        # Concatenate lazily (doesn't load data into memory)
-        if self.n_tiles == 4:
-            # NW + NE = North, SW + SE = South
-            north = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
-            south = xr.concat([tile_datasets[2], tile_datasets[3]], dim='lon')
-            merged_ds = xr.concat([north, south], dim='lat')
-        elif self.n_tiles == 2:
-            # West + East
-            merged_ds = xr.concat([tile_datasets[0], tile_datasets[1]], dim='lon')
-
-        # Validate dimensions after merge
-        expected_dims = {'time': 1, 'lat': 621, 'lon': 1405}
-        actual_dims = dict(merged_ds.dims)
-        if actual_dims != expected_dims:
-            raise ValueError(
-                f"Dimension mismatch after tile merge: {actual_dims} != {expected_dims}. "
-                f"This indicates a tile concatenation bug."
-            )
-
-        # Fix count indices to prevent timedelta encoding
-        merged_ds = self.fix_count_indices(merged_ds)
-
-        # Extract indices as dictionary
-        all_indices = {var: merged_ds[var] for var in merged_ds.data_vars}
-
-        # Clean up tile files and datasets
-        for tile_ds in tile_datasets:
-            try:
-                tile_ds.close()
-            except Exception as e:
-                logger.warning(f"Failed to close tile dataset: {e}")
-
-        for tile_file in tile_files:
-            try:
-                tile_file.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to delete tile file {tile_file}: {e}")
+        # Use the mixin's spatial tiling functionality
+        all_indices = self.process_with_spatial_tiling(
+            ds=ds,
+            output_dir=output_dir,
+            expected_dims=expected_dims
+        )
 
         return all_indices
 
