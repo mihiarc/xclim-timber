@@ -309,10 +309,22 @@ class PrecipitationPipeline(BasePipeline, SpatialTilingMixin):
         # Subset baseline percentiles to match tile
         # Use lock to prevent concurrent access to shared baseline data
         with self.baseline_lock:
-            tile_baselines = {
-                key: baseline.isel(lat=lat_slice, lon=lon_slice)
-                for key, baseline in self.baselines.items()
-            }
+            tile_baselines = {}
+            for key, baseline in self.baselines.items():
+                # Slice spatial dimensions first
+                tile_baseline = baseline.isel(lat=lat_slice, lon=lon_slice)
+
+                # Rechunk to match tile data structure (prevents implicit dask rechunk operations)
+                # This eliminates 2-3x hidden memory overhead during percentile-based index calculations
+                if hasattr(tile_ds, 'chunks') and hasattr(tile_baseline, 'chunk'):
+                    chunk_dict = {
+                        'lat': tile_ds.chunks.get('lat', (-1,))[0] if 'lat' in tile_ds.chunks else -1,
+                        'lon': tile_ds.chunks.get('lon', (-1,))[0] if 'lon' in tile_ds.chunks else -1,
+                        'dayofyear': -1  # Keep temporal dimension together for efficiency
+                    }
+                    tile_baseline = tile_baseline.chunk(chunk_dict)
+
+                tile_baselines[key] = tile_baseline
 
         # Calculate indices for this tile
         basic_indices = self.calculate_precipitation_indices(tile_ds)
