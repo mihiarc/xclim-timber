@@ -5,77 +5,83 @@ Efficiently processes humidity-based climate indices using Zarr streaming.
 Calculates 8 humidity indices including vapor pressure deficit, dewpoint, and moisture stress metrics.
 """
 
-import argparse
 import logging
 import sys
-from pathlib import Path
-from typing import List, Optional
-import warnings
+from typing import Dict
+
 import xarray as xr
-import xclim.indicators.atmos as atmos
-import xclim.indices as indices
-from dask.distributed import Client
-import dask
-import psutil
-import os
-from datetime import datetime
-import numpy as np
 
-# Suppress common warnings that don't affect functionality
-warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
-warnings.filterwarnings('ignore', category=UserWarning, message='.*specified chunks.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
-warnings.filterwarnings('ignore', category=FutureWarning, message='.*return type of.*Dataset.dims.*')
+from core import BasePipeline, PipelineConfig, PipelineCLI
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 
-class HumidityPipeline:
+class HumidityPipeline(BasePipeline):
     """
     Memory-efficient humidity indices pipeline using Zarr streaming.
     Processes 8 humidity indices without loading full dataset into memory.
+
+    Indices:
+    - Dewpoint statistics (3): Mean, min, max dewpoint temperature
+    - Humidity thresholds (1): Humid days (dewpoint > 18°C)
+    - VPD statistics (2): Mean vpdmax, mean vpdmin
+    - VPD thresholds (2): Extreme VPD days (>4 kPa), low VPD days (<0.5 kPa)
     """
 
-    def __init__(self, chunk_years: int = 4, enable_dashboard: bool = False):
+    def __init__(self, **kwargs):
         """
         Initialize the pipeline.
 
         Args:
-            chunk_years: Number of years to process in each temporal chunk
-            enable_dashboard: Whether to enable Dask dashboard
+            **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
-        self.chunk_years = chunk_years
-        self.enable_dashboard = enable_dashboard
-        self.client = None
+        # Initialize BasePipeline with humidity Zarr store
+        super().__init__(
+            zarr_paths={'humidity': PipelineConfig.HUMIDITY_ZARR},
+            chunk_config=PipelineConfig.DEFAULT_CHUNKS,
+            **kwargs
+        )
 
-        # Zarr store path for humidity data
-        self.zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/humidity'
+    def _preprocess_datasets(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
+        """
+        Preprocess humidity datasets (rename variables, fix units).
 
-        # Optimal chunk configuration (aligned with dimensions)
-        self.chunk_config = {
-            'time': 365,  # One year of daily data
-            'lat': 103,   # 621 / 103 = 6 chunks (smaller for less memory)
-            'lon': 201    # 1405 / 201 = 7 chunks (smaller for less memory)
-        }
+        Args:
+            datasets: Dictionary with 'humidity' dataset
 
-    def setup_dask_client(self):
-        """Initialize Dask client with memory limits."""
-        # Use threaded scheduler instead of distributed for lower memory overhead
-        logger.info("Using Dask threaded scheduler (no distributed client for memory efficiency)")
+        Returns:
+            Preprocessed datasets dictionary
+        """
+        humidity_ds = datasets['humidity']
 
-    def close(self):
-        """Clean up resources."""
-        if self.client:
-            self.client.close()
-            self.client = None
+        # Rename humidity variables for consistency
+        humidity_ds = self._rename_variables(humidity_ds, PipelineConfig.HUMIDITY_RENAME_MAP)
+
+        # Fix units for humidity variables
+        humidity_ds = self._fix_units(humidity_ds, PipelineConfig.HUMIDITY_UNIT_FIXES)
+
+        # Add CF standard names
+        for var_name in ['tdew', 'vpdmax', 'vpdmin']:
+            if var_name in humidity_ds:
+                humidity_ds[var_name].attrs['standard_name'] = PipelineConfig.CF_STANDARD_NAMES.get(
+                    var_name, ''
+                )
+
+        datasets['humidity'] = humidity_ds
+        return datasets
+
+    def calculate_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
+        """
+        Calculate all humidity indices.
+
+        Args:
+            datasets: Dictionary with 'humidity' dataset
+
+        Returns:
+            Dictionary of calculated indices
+        """
+        ds = datasets['humidity']
+        return self.calculate_humidity_indices(ds)
 
     def calculate_humidity_indices(self, ds: xr.Dataset) -> dict:
         """
@@ -134,199 +140,72 @@ class HumidityPipeline:
                 data_array.attrs['standard_name'] = 'dew_point_temperature'
             elif 'vpd' in key:
                 if 'days' in key:
-                    data_array.attrs['units'] = 'days'
+                    data_array.attrs['units'] = '1'  # Dimensionless count
                     data_array.attrs['standard_name'] = 'number_of_days'
                 else:
                     data_array.attrs['units'] = 'kPa'
                     data_array.attrs['standard_name'] = 'vapor_pressure_deficit'
             elif 'humid_days' in key:
-                data_array.attrs['units'] = 'days'
+                data_array.attrs['units'] = '1'  # Dimensionless count
                 data_array.attrs['standard_name'] = 'number_of_days_with_high_humidity'
 
         return indices_dict
 
-
-    def process_time_chunk(
+    def _add_global_metadata(
         self,
+        result_ds: xr.Dataset,
         start_year: int,
         end_year: int,
-        output_dir: Path
-    ) -> Path:
+        pipeline_name: str,
+        indices_count: int,
+        additional_attrs: dict = None
+    ) -> xr.Dataset:
         """
-        Process a single time chunk.
+        Override to add humidity-specific metadata.
 
         Args:
-            start_year: Start year for this chunk
-            end_year: End year for this chunk
-            output_dir: Output directory
-
-        Returns:
-            Path to output file
-        """
-        logger.info(f"\nProcessing chunk: {start_year}-{end_year}")
-
-        # Track memory
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Initial memory: {initial_memory:.1f} MB")
-
-        # Load humidity data
-        logger.info("Loading humidity data...")
-        ds = xr.open_zarr(self.zarr_store, chunks=self.chunk_config)
-
-        # Select time range
-        combined_ds = ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-
-        # Rename humidity variables for consistency (if needed)
-        rename_map = {
-            'tdmean': 'tdew',  # PRISM uses 'tdmean' for dewpoint temperature
-            'vpdmax': 'vpdmax',  # Already correct
-            'vpdmin': 'vpdmin'   # Already correct
-        }
-
-        for old_name, new_name in rename_map.items():
-            if old_name in combined_ds and old_name != new_name:
-                combined_ds = combined_ds.rename({old_name: new_name})
-                logger.debug(f"Renamed {old_name} to {new_name}")
-
-        # Fix units for humidity variables
-        unit_fixes = {
-            'tdew': 'degC',     # Dewpoint temperature in Celsius
-            'vpdmax': 'kPa',    # Vapor pressure deficit in kilopascals
-            'vpdmin': 'kPa'     # Vapor pressure deficit in kilopascals
-        }
-
-        for var_name, unit in unit_fixes.items():
-            if var_name in combined_ds:
-                combined_ds[var_name].attrs['units'] = unit
-                combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
-
-        # Calculate humidity indices
-        logger.info("Calculating humidity indices...")
-        all_indices = self.calculate_humidity_indices(combined_ds)
-        logger.info(f"  Calculated {len(all_indices)} humidity indices")
-
-        if not all_indices:
-            logger.warning("No indices calculated")
-            return None
-
-        # Combine indices into dataset
-        logger.info(f"Combining {len(all_indices)} indices into dataset...")
-        result_ds = xr.Dataset(all_indices)
-
-        # Add metadata
-        result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber humidity pipeline v1.0'
-        result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-        result_ds.attrs['indices_count'] = len(all_indices)
-
-        # Save output
-        output_file = output_dir / f'humidity_indices_{start_year}_{end_year}.nc'
-        logger.info(f"Saving to {output_file}...")
-
-        with dask.config.set(scheduler='threads'):
-            encoding = {}
-            for var_name in result_ds.data_vars:
-                encoding[var_name] = {
-                    'zlib': True,
-                    'complevel': 4,
-                    'chunksizes': (1, 69, 281)  # Aligned chunks for storage
-                }
-
-            result_ds.to_netcdf(
-                output_file,
-                engine='netcdf4',
-                encoding=encoding
-            )
-
-        # Report memory usage
-        final_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
-
-        # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        logger.info(f"Output file size: {file_size_mb:.2f} MB")
-
-        return output_file
-
-    def _get_standard_name(self, var_name: str) -> str:
-        """Get CF-compliant standard name for variable."""
-        standard_names = {
-            'tdew': 'dew_point_temperature',
-            'vpdmax': 'vapor_pressure_deficit',
-            'vpdmin': 'vapor_pressure_deficit'
-        }
-        return standard_names.get(var_name, '')
-
-    def run(
-        self,
-        start_year: int,
-        end_year: int,
-        output_dir: str = './outputs'
-    ) -> List[Path]:
-        """
-        Run the pipeline for specified years.
-
-        Args:
+            result_ds: Result dataset
             start_year: Start year
             end_year: End year
-            output_dir: Output directory path
+            pipeline_name: Name of the pipeline
+            indices_count: Number of indices calculated
+            additional_attrs: Additional attributes to add
 
         Returns:
-            List of output file paths
+            Dataset with global metadata
         """
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Call base implementation
+        result_ds = super()._add_global_metadata(
+            result_ds, start_year, end_year, pipeline_name, indices_count, additional_attrs
+        )
 
-        logger.info("=" * 60)
-        logger.info("HUMIDITY INDICES PIPELINE")
-        logger.info("=" * 60)
-        logger.info(f"Period: {start_year}-{end_year}")
-        logger.info(f"Output: {output_path}")
-        logger.info(f"Chunk size: {self.chunk_years} years")
+        # Add humidity-specific metadata
+        result_ds.attrs['indices_description'] = (
+            '8 humidity indices: dewpoint statistics (3), humid days (1), '
+            'VPD statistics (2), VPD threshold days (2)'
+        )
+        result_ds.attrs['thresholds'] = (
+            'humid_days: dewpoint > 18°C; extreme_vpd_days: vpdmax > 4 kPa; '
+            'low_vpd_days: vpdmin < 0.5 kPa'
+        )
+        result_ds.attrs['note'] = (
+            'Count indices stored as dimensionless (units=1) to prevent CF timedelta encoding. '
+            'All statistics computed from daily PRISM humidity data.'
+        )
 
-        # Setup Dask
-        self.setup_dask_client()
-
-        output_files = []
-
-        try:
-            # Process in temporal chunks
-            current_year = start_year
-            while current_year <= end_year:
-                chunk_end = min(current_year + self.chunk_years - 1, end_year)
-
-                output_file = self.process_time_chunk(
-                    current_year,
-                    chunk_end,
-                    output_path
-                )
-
-                if output_file:
-                    output_files.append(output_file)
-
-                current_year = chunk_end + 1
-
-            logger.info("=" * 60)
-            logger.info(f"✓ Pipeline complete! Generated {len(output_files)} files")
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.error(f"Pipeline failed: {e}")
-            raise
-        finally:
-            self.close()
-
-        return output_files
+        return result_ds
 
 
 def main():
     """Main entry point with command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Humidity Indices Pipeline: Calculate 8 humidity-based climate indices",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
+    indices_list = """
+  Dewpoint statistics (3): Mean, min, max dewpoint temperature
+  Humidity thresholds (1): Humid days (dewpoint > 18°C)
+  VPD statistics (2): Mean vpdmax, mean vpdmin
+  VPD thresholds (2): Extreme VPD days (>4 kPa), low VPD days (<0.5 kPa)
+"""
+
+    examples = """
   # Process default period (1981-2024)
   python humidity_pipeline.py
 
@@ -335,65 +214,22 @@ Examples:
 
   # Process with custom output directory
   python humidity_pipeline.py --output-dir ./results
-        """
-    )
+"""
 
-    parser.add_argument(
-        '--start-year',
-        type=int,
-        default=1981,
-        help='Start year for processing (default: 1981)'
-    )
-
-    parser.add_argument(
-        '--end-year',
-        type=int,
-        default=2024,
-        help='End year for processing (default: 2024)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default='./outputs',
-        help='Output directory for results (default: ./outputs)'
-    )
-
-    parser.add_argument(
-        '--chunk-years',
-        type=int,
-        default=4,
-        help='Number of years to process per chunk (default: 4 for memory efficiency)'
-    )
-
-    parser.add_argument(
-        '--dashboard',
-        action='store_true',
-        help='Enable Dask dashboard on port 8787'
-    )
-
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-
-    parser.add_argument(
-        '--show-warnings',
-        action='store_true',
-        help='Show all warnings (default: suppressed)'
+    parser = PipelineCLI.create_parser(
+        "Humidity Indices",
+        "Calculate 8 humidity-based climate indices",
+        indices_list,
+        examples
     )
 
     args = parser.parse_args()
 
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Handle common setup (logging, warnings)
+    PipelineCLI.handle_common_setup(args)
 
-    # Re-enable warnings if requested
-    if args.show_warnings:
-        warnings.resetwarnings()
-        logger.info("Warnings enabled")
+    # Validate year range
+    PipelineCLI.validate_years(args.start_year, args.end_year)
 
     # Create and run pipeline
     pipeline = HumidityPipeline(
