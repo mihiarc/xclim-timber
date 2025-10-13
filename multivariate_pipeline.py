@@ -5,225 +5,144 @@ Efficiently processes compound climate extreme indices using Zarr streaming.
 Calculates 4 multivariate indices combining temperature and precipitation data.
 """
 
-import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
-import warnings
+from typing import Dict
+import threading
+
 import xarray as xr
 import xclim.indicators.atmos as atmos
-from dask.distributed import Client
-import dask
-import psutil
-import os
-from datetime import datetime
 
-# Suppress common warnings that don't affect functionality
-warnings.filterwarnings('ignore', category=UserWarning, message='.*cell_methods.*')
-warnings.filterwarnings('ignore', category=UserWarning, message='.*specified chunks.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*All-NaN slice.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*divide.*')
-warnings.filterwarnings('ignore', category=RuntimeWarning, message='.*invalid value.*')
-warnings.filterwarnings('ignore', category=FutureWarning, message='.*return type of.*Dataset.dims.*')
+from core import BasePipeline, PipelineConfig, BaselineLoader, PipelineCLI, SpatialTilingMixin
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 
-class MultivariatePipeline:
+class MultivariatePipeline(BasePipeline, SpatialTilingMixin):
     """
     Memory-efficient multivariate climate indices pipeline using Zarr streaming.
-    Processes 4 compound extreme indices combining temperature and precipitation without loading full dataset into memory.
+    Processes 4 compound extreme indices combining temperature and precipitation
+    without loading full dataset into memory.
+
+    Indices:
+    - Cold and dry days (compound drought)
+    - Cold and wet days (flooding risk)
+    - Warm and dry days (drought/fire risk)
+    - Warm and wet days (compound extremes)
     """
 
-    def __init__(self, chunk_years: int = 1, enable_dashboard: bool = False):
+    def __init__(self, n_tiles: int = 4, **kwargs):
         """
-        Initialize the pipeline.
+        Initialize the pipeline with parallel spatial tiling.
 
         Args:
-            chunk_years: Number of years to process in each temporal chunk
-            enable_dashboard: Whether to enable Dask dashboard
+            n_tiles: Number of spatial tiles (2, 4, or 8, default: 4 for quadrants)
+            **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
-        self.chunk_years = chunk_years
-        self.enable_dashboard = enable_dashboard
-        self.client = None
+        # Initialize BasePipeline with BOTH temperature and precipitation Zarr stores
+        BasePipeline.__init__(
+            self,
+            zarr_paths={
+                'temperature': PipelineConfig.TEMP_ZARR,
+                'precipitation': PipelineConfig.PRECIP_ZARR
+            },
+            chunk_config=PipelineConfig.DEFAULT_CHUNKS,
+            **kwargs
+        )
 
-        # Zarr store paths
-        self.temp_zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/temperature'
-        self.precip_zarr_store = '/media/mihiarc/SSD4TB/data/PRISM/prism.zarr/precipitation'
-
-        # Baseline percentiles path
-        self.baseline_file = Path('data/baselines/baseline_percentiles_1981_2000.nc')
+        # Initialize SpatialTilingMixin
+        SpatialTilingMixin.__init__(self, n_tiles=n_tiles)
 
         # Load baseline percentiles for multivariate indices
-        self.baseline_percentiles = self._load_baseline_percentiles()
+        self.baseline_loader = BaselineLoader()
+        self.baselines = self._load_multivariate_baselines()
 
-        # Optimal chunk configuration (aligned with dimensions)
-        self.chunk_config = {
-            'time': 365,  # One year of daily data
-            'lat': 103,   # 621 / 103 = 6 chunks (smaller for less memory)
-            'lon': 201    # 1405 / 201 = 7 chunks (smaller for less memory)
-        }
+        # Thread lock for baseline access (fixes data race in parallel tile processing)
+        self.baseline_lock = threading.Lock()
 
-    def setup_dask_client(self):
-        """Initialize Dask client with memory limits."""
-        # Use threaded scheduler instead of distributed for lower memory overhead
-        logger.info("Using Dask threaded scheduler (no distributed client for memory efficiency)")
-
-    def close(self):
-        """Clean up resources."""
-        if self.client:
-            self.client.close()
-            self.client = None
-
-    def _load_baseline_percentiles(self):
+    def _load_multivariate_baselines(self) -> Dict[str, xr.DataArray]:
         """
-        Load pre-calculated baseline percentiles for multivariate indices.
+        Load multivariate baseline percentiles (temperature + precipitation).
 
         Returns:
-            dict: Dictionary of baseline percentile DataArrays
-
-        Raises:
-            FileNotFoundError: If baseline file doesn't exist with helpful message
+            Dictionary with tas_25p, tas_75p, pr_25p, pr_75p thresholds
         """
-        if not self.baseline_file.exists():
-            error_msg = f"""
-ERROR: Baseline percentiles file not found at {self.baseline_file}
+        # Get temperature baselines
+        temp_baselines = self.baseline_loader.get_temperature_baselines()
 
-Please generate baseline percentiles first:
-  python calculate_baseline_percentiles.py
+        # Get precipitation baselines
+        precip_baselines = self.baseline_loader.get_precipitation_baselines()
 
-This is a one-time operation that takes ~20-30 minutes.
-The file should include multivariate percentiles: tas_25p, tas_75p, pr_25p, pr_75p
-            """
-            raise FileNotFoundError(error_msg)
+        # Combine and filter to only the percentiles needed for multivariate indices
+        multivariate_baselines = {}
 
-        logger.info(f"Loading baseline percentiles from {self.baseline_file}")
-        ds = xr.open_dataset(self.baseline_file)
+        # Temperature percentiles (25th and 75th for cold/warm)
+        if 'tas_25p_threshold' in temp_baselines:
+            multivariate_baselines['tas_25p_threshold'] = temp_baselines['tas_25p_threshold']
+        if 'tas_75p_threshold' in temp_baselines:
+            multivariate_baselines['tas_75p_threshold'] = temp_baselines['tas_75p_threshold']
 
-        # Check if multivariate percentiles are present
-        required_percentiles = ['tas_25p_threshold', 'tas_75p_threshold', 'pr_25p_threshold', 'pr_75p_threshold']
-        missing = [p for p in required_percentiles if p not in ds.data_vars]
+        # Precipitation percentiles (25th and 75th for dry/wet)
+        if 'pr_25p_threshold' in precip_baselines:
+            multivariate_baselines['pr_25p_threshold'] = precip_baselines['pr_25p_threshold']
+        if 'pr_75p_threshold' in precip_baselines:
+            multivariate_baselines['pr_75p_threshold'] = precip_baselines['pr_75p_threshold']
+
+        # Validate we have all required percentiles
+        required = ['tas_25p_threshold', 'tas_75p_threshold', 'pr_25p_threshold', 'pr_75p_threshold']
+        missing = [p for p in required if p not in multivariate_baselines]
 
         if missing:
-            error_msg = f"""
-ERROR: Baseline file is missing multivariate percentiles: {', '.join(missing)}
+            logger.warning(f"Missing multivariate percentiles: {missing}")
+            logger.warning("Some indices may be skipped")
 
-The baseline file needs to be regenerated with multivariate percentiles.
-Please run:
-  python calculate_baseline_percentiles.py
+        logger.info(f"  Loaded {len(multivariate_baselines)} multivariate baseline percentile thresholds")
+        return multivariate_baselines
 
-This will generate a new baseline file with all required percentiles.
-            """
-            raise ValueError(error_msg)
-
-        percentiles = {
-            'tas_25p_threshold': ds['tas_25p_threshold'],
-            'tas_75p_threshold': ds['tas_75p_threshold'],
-            'pr_25p_threshold': ds['pr_25p_threshold'],
-            'pr_75p_threshold': ds['pr_75p_threshold']
-        }
-
-        logger.info(f"  Loaded {len(percentiles)} baseline percentile thresholds for multivariate indices")
-        return percentiles
-
-    def calculate_multivariate_indices(self, ds: xr.Dataset) -> dict:
+    def _preprocess_datasets(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
-        Calculate multivariate compound climate extreme indices.
+        Preprocess temperature and precipitation datasets.
 
         Args:
-            ds: Dataset with temperature and precipitation variables (tas, pr)
+            datasets: Dictionary with 'temperature' and 'precipitation' datasets
 
         Returns:
-            Dictionary of calculated indices
-
-        Note:
-            These indices capture compound climate extremes using percentile thresholds
-            from 1981-2000 baseline period:
-            - "warm/cold" = 75th/25th percentile of temperature (day-of-year)
-            - "wet/dry" = 75th/25th percentile of precipitation (day-of-year, wet days only)
+            Preprocessed datasets dictionary with merged 'combined' dataset
         """
-        indices = {}
+        temp_ds = datasets['temperature']
+        precip_ds = datasets['precipitation']
 
-        # All four indices require both temperature and precipitation
-        if 'tas' not in ds or 'pr' not in ds:
-            logger.warning("Missing required variables (tas or pr) for multivariate indices")
-            return indices
+        # Select only needed variables (memory efficiency)
+        if 'tmean' in temp_ds:
+            temp_ds = temp_ds[['tmean']]
+        if 'ppt' in precip_ds:
+            precip_ds = precip_ds[['ppt']]
 
-        # Use pre-calculated baseline percentiles
-        tas_25 = self.baseline_percentiles['tas_25p_threshold']
-        tas_75 = self.baseline_percentiles['tas_75p_threshold']
-        pr_25 = self.baseline_percentiles['pr_25p_threshold']
-        pr_75 = self.baseline_percentiles['pr_75p_threshold']
+        # Rename variables for xclim compatibility
+        temp_ds = self._rename_variables(temp_ds, {'tmean': 'tas'})
+        precip_ds = self._rename_variables(precip_ds, PipelineConfig.PRECIP_RENAME_MAP)
 
-        logger.info("  Calculating 4 compound extreme indices using baseline percentiles...")
+        # Fix units
+        temp_ds = self._fix_units(temp_ds, {'tas': 'degC'})
+        precip_ds = self._fix_units(precip_ds, PipelineConfig.PRECIP_UNIT_FIXES)
 
-        # 1. Cold and Dry Days (compound drought)
-        logger.info("  - Calculating cold_and_dry_days...")
-        cold_dry = atmos.cold_and_dry_days(
-            tas=ds.tas,
-            pr=ds.pr,
-            tas_per=tas_25,  # Cold threshold (25th percentile by day-of-year)
-            pr_per=pr_25,    # Dry threshold (25th percentile of wet days by day-of-year)
-            freq='YS'
-        )
-        # Drop quantile coordinate if present
-        if 'quantile' in cold_dry.coords:
-            cold_dry = cold_dry.drop_vars('quantile')
-        indices['cold_and_dry_days'] = cold_dry
+        # Add CF standard names
+        if 'tas' in temp_ds:
+            temp_ds['tas'].attrs['standard_name'] = 'air_temperature'
+        if 'pr' in precip_ds:
+            precip_ds['pr'].attrs['standard_name'] = 'precipitation_flux'
 
-        # 2. Cold and Wet Days (flooding risk)
-        logger.info("  - Calculating cold_and_wet_days...")
-        # Manual calculation: compare each day to its day-of-year percentile
-        # Broadcast percentiles to match time dimension
-        tas_25_bcast = tas_25.sel(dayofyear=ds.time.dt.dayofyear).drop_vars('dayofyear')
-        pr_75_bcast = pr_75.sel(dayofyear=ds.time.dt.dayofyear).drop_vars('dayofyear')
-        cold_days = ds.tas < tas_25_bcast
-        wet_days = ds.pr > pr_75_bcast
-        cold_wet = (cold_days & wet_days).resample(time='YS').sum()
-        cold_wet.attrs['units'] = 'days'
-        cold_wet.attrs['long_name'] = 'Cold and wet days'
-        cold_wet.attrs['description'] = 'Days with temperature below 25th percentile and precipitation above 75th percentile'
-        # Drop quantile coordinate if present
-        if 'quantile' in cold_wet.coords:
-            cold_wet = cold_wet.drop_vars('quantile')
-        indices['cold_and_wet_days'] = cold_wet
+        # Validate coordinate alignment
+        logger.info("Validating coordinate alignment...")
+        self._validate_coordinates(temp_ds, precip_ds, ['time', 'lat', 'lon'])
 
-        # 3. Warm and Dry Days (drought/fire risk)
-        logger.info("  - Calculating warm_and_dry_days...")
-        warm_dry = atmos.warm_and_dry_days(
-            tas=ds.tas,
-            pr=ds.pr,
-            tas_per=tas_75,  # Warm threshold (75th percentile by day-of-year)
-            pr_per=pr_25,    # Dry threshold (25th percentile of wet days by day-of-year)
-            freq='YS'
-        )
-        # Drop quantile coordinate if present
-        if 'quantile' in warm_dry.coords:
-            warm_dry = warm_dry.drop_vars('quantile')
-        indices['warm_and_dry_days'] = warm_dry
+        # Merge temperature and precipitation into single dataset
+        logger.info("Merging temperature and precipitation datasets...")
+        combined_ds = xr.merge([temp_ds, precip_ds])
 
-        # 4. Warm and Wet Days (compound extremes)
-        logger.info("  - Calculating warm_and_wet_days...")
-        warm_wet = atmos.warm_and_wet_days(
-            tas=ds.tas,
-            pr=ds.pr,
-            tas_per=tas_75,  # Warm threshold (75th percentile by day-of-year)
-            pr_per=pr_75,    # Wet threshold (75th percentile of wet days by day-of-year)
-            freq='YS'
-        )
-        # Drop quantile coordinate if present
-        if 'quantile' in warm_wet.coords:
-            warm_wet = warm_wet.drop_vars('quantile')
-        indices['warm_and_wet_days'] = warm_wet
-
-        return indices
+        # Return combined dataset
+        return {'combined': combined_ds}
 
     def _validate_coordinates(self, ds1: xr.Dataset, ds2: xr.Dataset, coord_names: list):
         """
@@ -241,15 +160,15 @@ This will generate a new baseline file with all required percentiles.
 
         for coord in coord_names:
             if coord not in ds1.coords:
-                raise ValueError(f"Coordinate '{coord}' missing in temperature dataset")
+                raise ValueError(f"Coordinate '{coord}' missing in first dataset")
             if coord not in ds2.coords:
-                raise ValueError(f"Coordinate '{coord}' missing in precipitation dataset")
+                raise ValueError(f"Coordinate '{coord}' missing in second dataset")
 
             # Check shape
             if ds1[coord].shape != ds2[coord].shape:
                 raise ValueError(
                     f"Coordinate '{coord}' shape mismatch: "
-                    f"temperature {ds1[coord].shape} vs precipitation {ds2[coord].shape}"
+                    f"{ds1[coord].shape} vs {ds2[coord].shape}"
                 )
 
             # Check values match (with floating point tolerance for spatial coords)
@@ -263,302 +182,298 @@ This will generate a new baseline file with all required percentiles.
                 if not ds1[coord].equals(ds2[coord]):
                     raise ValueError(f"Time coordinates don't match between datasets")
 
-        logger.debug(f"Coordinate validation passed for: {coord_names}")
-
-    def process_time_chunk(
-        self,
-        start_year: int,
-        end_year: int,
-        output_dir: Path
-    ) -> Path:
+    def calculate_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
         """
-        Process a single time chunk.
+        Calculate all multivariate compound extreme indices.
 
         Args:
-            start_year: Start year for this chunk
-            end_year: End year for this chunk
-            output_dir: Output directory
+            datasets: Dictionary with 'combined' dataset (merged temperature + precipitation)
 
         Returns:
-            Path to output file
+            Dictionary of calculated indices
         """
-        logger.info(f"\nProcessing chunk: {start_year}-{end_year}")
-
-        # Track memory
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Initial memory: {initial_memory:.1f} MB")
-
-        try:
-            # Load temperature data with error handling
-            logger.info("Loading temperature data...")
-            try:
-                temp_ds = xr.open_zarr(self.temp_zarr_store, chunks=self.chunk_config)
-            except Exception as e:
-                logger.error(f"Failed to open temperature zarr store: {self.temp_zarr_store}")
-                raise FileNotFoundError(f"Temperature data not accessible: {e}") from e
-
-            # Load precipitation data with error handling
-            logger.info("Loading precipitation data...")
-            try:
-                precip_ds = xr.open_zarr(self.precip_zarr_store, chunks=self.chunk_config)
-            except Exception as e:
-                logger.error(f"Failed to open precipitation zarr store: {self.precip_zarr_store}")
-                raise FileNotFoundError(f"Precipitation data not accessible: {e}") from e
-
-            # Validate required variables exist
-            if 'tmean' not in temp_ds.data_vars:
-                raise ValueError(
-                    f"Expected 'tmean' not found in temperature store. "
-                    f"Available: {list(temp_ds.data_vars)}"
-                )
-            if 'ppt' not in precip_ds.data_vars:
-                raise ValueError(
-                    f"Expected 'ppt' not found in precipitation store. "
-                    f"Available: {list(precip_ds.data_vars)}"
-                )
-
-            # Select ONLY needed variables (memory efficiency)
-            temp_ds = temp_ds[['tmean']]
-            precip_ds = precip_ds[['ppt']]
-
-            # Select time range for both
-            temp_subset = temp_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-            precip_subset = precip_ds.sel(time=slice(f'{start_year}-01-01', f'{end_year}-12-31'))
-
-            # Validate time ranges exist
-            if len(temp_subset.time) == 0:
-                raise ValueError(f"No temperature data found for period {start_year}-{end_year}")
-            if len(precip_subset.time) == 0:
-                raise ValueError(f"No precipitation data found for period {start_year}-{end_year}")
-
-            logger.info(f"  Temperature: {len(temp_subset.time)} timesteps")
-            logger.info(f"  Precipitation: {len(precip_subset.time)} timesteps")
-
-            # Rename variables for xclim compatibility
-            temp_subset = temp_subset.rename({'tmean': 'tas'})
-            precip_subset = precip_subset.rename({'ppt': 'pr'})
-            logger.debug("Renamed variables: tmean→tas, ppt→pr")
-
-            # Validate coordinate alignment before merge
-            logger.info("Validating coordinate alignment...")
-            self._validate_coordinates(temp_subset, precip_subset, ['time', 'lat', 'lon'])
-
-            # Merge datasets (simplified - variables exist after validation)
-            logger.info("Merging temperature and precipitation datasets...")
-            combined_ds = xr.merge([temp_subset, precip_subset])
-
-        except Exception as e:
-            logger.error(f"Failed during data loading/merging: {e}")
-            raise
-
-        # Fix units
-        unit_fixes = {
-            'tas': 'degC',
-            'pr': 'mm/day'
-        }
-
-        for var_name, unit in unit_fixes.items():
-            if var_name in combined_ds:
-                combined_ds[var_name].attrs['units'] = unit
-                combined_ds[var_name].attrs['standard_name'] = self._get_standard_name(var_name)
+        ds = datasets['combined']
 
         # Calculate multivariate indices
-        logger.info("Calculating multivariate compound extreme indices...")
-        all_indices = self.calculate_multivariate_indices(combined_ds)
-        logger.info(f"  Calculated {len(all_indices)} multivariate indices")
+        indices = self.calculate_multivariate_indices(ds)
+        return indices
 
-        if not all_indices:
-            logger.warning("No indices calculated")
-            return None
-
-        # Combine indices into dataset
-        logger.info(f"Combining {len(all_indices)} indices into dataset...")
-        result_ds = xr.Dataset(all_indices)
-
-        # Add metadata
-        result_ds.attrs['creation_date'] = datetime.now().isoformat()
-        result_ds.attrs['software'] = 'xclim-timber multivariate pipeline v1.0'
-        result_ds.attrs['time_range'] = f'{start_year}-{end_year}'
-        result_ds.attrs['indices_count'] = len(all_indices)
-        result_ds.attrs['description'] = 'Compound climate extreme indices combining temperature and precipitation'
-
-        # Save output
-        output_file = output_dir / f'multivariate_indices_{start_year}_{end_year}.nc'
-        logger.info(f"Saving to {output_file}...")
-
-        with dask.config.set(scheduler='threads'):
-            encoding = {}
-            for var_name in result_ds.data_vars:
-                encoding[var_name] = {
-                    'zlib': True,
-                    'complevel': 4,
-                    'chunksizes': (1, 69, 281)  # Aligned chunks for storage
-                }
-
-            result_ds.to_netcdf(
-                output_file,
-                engine='netcdf4',
-                encoding=encoding
-            )
-
-        # Report memory usage
-        final_memory = process.memory_info().rss / 1024 / 1024  # MB
-        logger.info(f"Final memory: {final_memory:.1f} MB (increase: {final_memory - initial_memory:.1f} MB)")
-
-        # Report file size
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        logger.info(f"Output file size: {file_size_mb:.2f} MB")
-
-        return output_file
-
-    def _get_standard_name(self, var_name: str) -> str:
-        """Get CF-compliant standard name for variable."""
-        standard_names = {
-            'tas': 'air_temperature',
-            'pr': 'precipitation_flux'
-        }
-        return standard_names.get(var_name, '')
-
-    def run(
-        self,
-        start_year: int,
-        end_year: int,
-        output_dir: str = './outputs'
-    ) -> List[Path]:
+    def calculate_multivariate_indices(self, ds: xr.Dataset) -> dict:
         """
-        Run the pipeline for specified years.
+        Calculate multivariate compound climate extreme indices.
 
         Args:
-            start_year: Start year
-            end_year: End year
-            output_dir: Output directory path
+            ds: Dataset with temperature and precipitation variables (tas, pr)
 
         Returns:
-            List of output file paths
+            Dictionary of calculated indices
         """
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        indices = {}
 
-        logger.info("=" * 60)
-        logger.info("MULTIVARIATE CLIMATE INDICES PIPELINE")
-        logger.info("=" * 60)
-        logger.info(f"Period: {start_year}-{end_year}")
-        logger.info(f"Output: {output_path}")
-        logger.info(f"Chunk size: {self.chunk_years} years")
+        # All four indices require both temperature and precipitation
+        if 'tas' not in ds or 'pr' not in ds:
+            logger.warning("Missing required variables (tas or pr) for multivariate indices")
+            return indices
 
-        # Setup Dask
-        self.setup_dask_client()
+        # Validate we have all required baseline percentiles
+        required = ['tas_25p_threshold', 'tas_75p_threshold', 'pr_25p_threshold', 'pr_75p_threshold']
+        missing = [p for p in required if p not in self.baselines]
+        if missing:
+            logger.warning(f"Missing baseline percentiles: {missing}. Skipping multivariate indices.")
+            return indices
 
-        output_files = []
+        # Use pre-calculated baseline percentiles
+        tas_25 = self.baselines['tas_25p_threshold']
+        tas_75 = self.baselines['tas_75p_threshold']
+        pr_25 = self.baselines['pr_25p_threshold']
+        pr_75 = self.baselines['pr_75p_threshold']
+
+        logger.info("  Calculating 4 compound extreme indices using baseline percentiles...")
+
+        # 1. Cold and Dry Days (compound drought)
+        try:
+            logger.info("  - Calculating cold_and_dry_days...")
+            cold_dry = atmos.cold_and_dry_days(
+                tas=ds.tas,
+                pr=ds.pr,
+                tas_per=tas_25,  # Cold threshold (25th percentile by day-of-year)
+                pr_per=pr_25,    # Dry threshold (25th percentile of wet days by day-of-year)
+                freq='YS'
+            )
+            # Drop quantile coordinate if present
+            if 'quantile' in cold_dry.coords:
+                cold_dry = cold_dry.drop_vars('quantile')
+            indices['cold_and_dry_days'] = cold_dry
+        except Exception as e:
+            logger.error(f"Failed to calculate cold_and_dry_days: {e}")
+
+        # 2. Cold and Wet Days (flooding risk)
+        try:
+            logger.info("  - Calculating cold_and_wet_days...")
+            # Manual calculation: compare each day to its day-of-year percentile
+            tas_25_bcast = tas_25.sel(dayofyear=ds.time.dt.dayofyear).drop_vars('dayofyear')
+            pr_75_bcast = pr_75.sel(dayofyear=ds.time.dt.dayofyear).drop_vars('dayofyear')
+            cold_days = ds.tas < tas_25_bcast
+            wet_days = ds.pr > pr_75_bcast
+            cold_wet = (cold_days & wet_days).resample(time='YS').sum()
+            cold_wet.attrs['units'] = 'days'
+            cold_wet.attrs['long_name'] = 'Cold and wet days'
+            cold_wet.attrs['description'] = 'Days with temperature below 25th percentile and precipitation above 75th percentile'
+            # Drop quantile coordinate if present
+            if 'quantile' in cold_wet.coords:
+                cold_wet = cold_wet.drop_vars('quantile')
+            indices['cold_and_wet_days'] = cold_wet
+        except Exception as e:
+            logger.error(f"Failed to calculate cold_and_wet_days: {e}")
+
+        # 3. Warm and Dry Days (drought/fire risk)
+        try:
+            logger.info("  - Calculating warm_and_dry_days...")
+            warm_dry = atmos.warm_and_dry_days(
+                tas=ds.tas,
+                pr=ds.pr,
+                tas_per=tas_75,  # Warm threshold (75th percentile by day-of-year)
+                pr_per=pr_25,    # Dry threshold (25th percentile of wet days by day-of-year)
+                freq='YS'
+            )
+            # Drop quantile coordinate if present
+            if 'quantile' in warm_dry.coords:
+                warm_dry = warm_dry.drop_vars('quantile')
+            indices['warm_and_dry_days'] = warm_dry
+        except Exception as e:
+            logger.error(f"Failed to calculate warm_and_dry_days: {e}")
+
+        # 4. Warm and Wet Days (compound extremes)
+        try:
+            logger.info("  - Calculating warm_and_wet_days...")
+            warm_wet = atmos.warm_and_wet_days(
+                tas=ds.tas,
+                pr=ds.pr,
+                tas_per=tas_75,  # Warm threshold (75th percentile by day-of-year)
+                pr_per=pr_75,    # Wet threshold (75th percentile of wet days by day-of-year)
+                freq='YS'
+            )
+            # Drop quantile coordinate if present
+            if 'quantile' in warm_wet.coords:
+                warm_wet = warm_wet.drop_vars('quantile')
+            indices['warm_and_wet_days'] = warm_wet
+        except Exception as e:
+            logger.error(f"Failed to calculate warm_and_wet_days: {e}")
+
+        return indices
+
+    def _process_single_tile(
+        self,
+        ds: xr.Dataset,
+        lat_slice: slice,
+        lon_slice: slice,
+        tile_name: str
+    ) -> Dict[str, xr.DataArray]:
+        """
+        Process a single spatial tile (multivariate-specific override).
+
+        This override handles baseline percentiles subsetting for both
+        temperature and precipitation thresholds.
+
+        Args:
+            ds: Full combined dataset (temperature + precipitation merged)
+            lat_slice: Latitude slice for this tile
+            lon_slice: Longitude slice for this tile
+            tile_name: Name of this tile (for logging)
+
+        Returns:
+            Dictionary of calculated indices for this tile
+        """
+        logger.info(f"  Processing tile: {tile_name}")
+
+        # Select spatial subset
+        tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
+
+        # Subset baseline percentiles to match tile (thread-safe)
+        with self.baseline_lock:
+            tile_baselines_temp = {
+                key: baseline.isel(lat=lat_slice, lon=lon_slice)
+                for key, baseline in self.baselines.items()
+            }
+
+        # Temporarily replace baselines with tile-specific versions
+        original_baselines = self.baselines
+        self.baselines = tile_baselines_temp
 
         try:
-            # Process in temporal chunks
-            current_year = start_year
-            while current_year <= end_year:
-                chunk_end = min(current_year + self.chunk_years - 1, end_year)
-
-                output_file = self.process_time_chunk(
-                    current_year,
-                    chunk_end,
-                    output_path
-                )
-
-                if output_file:
-                    output_files.append(output_file)
-
-                current_year = chunk_end + 1
-
-            logger.info("=" * 60)
-            logger.info(f"✓ Pipeline complete! Generated {len(output_files)} files")
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.error(f"Pipeline failed: {e}")
-            raise
+            # Calculate multivariate indices for this tile
+            tile_indices = self.calculate_multivariate_indices(tile_ds)
         finally:
-            self.close()
+            # Restore original baselines
+            self.baselines = original_baselines
 
-        return output_files
+        return tile_indices
+
+    def _calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
+        """
+        Override to implement spatial tiling for multivariate indices.
+
+        Uses the SpatialTilingMixin to process the merged dataset in parallel
+        spatial tiles for better memory efficiency and performance.
+
+        Args:
+            datasets: Dictionary with 'combined' dataset (merged temp + precip)
+
+        Returns:
+            Dictionary mapping index name to calculated DataArray
+        """
+        ds = datasets['combined']
+
+        # Define expected dimensions for validation
+        num_years = len(ds.time.groupby('time.year').groups)
+        expected_dims = {
+            'time': num_years,  # Number of years (aggregated to annual)
+            'lat': 621,
+            'lon': 1405
+        }
+
+        # Create temporary directory for tiles
+        output_dir = Path('./outputs')
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use the mixin's spatial tiling functionality
+        all_indices = self.process_with_spatial_tiling(
+            ds=ds,
+            output_dir=output_dir,
+            expected_dims=expected_dims
+        )
+
+        return all_indices
+
+    def _add_global_metadata(
+        self,
+        result_ds: xr.Dataset,
+        start_year: int,
+        end_year: int,
+        pipeline_name: str,
+        indices_count: int,
+        additional_attrs: dict = None
+    ) -> xr.Dataset:
+        """
+        Override to add multivariate-specific metadata.
+
+        Args:
+            result_ds: Result dataset
+            start_year: Start year
+            end_year: End year
+            pipeline_name: Name of the pipeline
+            indices_count: Number of indices calculated
+            additional_attrs: Additional attributes to add
+
+        Returns:
+            Dataset with global metadata
+        """
+        # Call base implementation
+        result_ds = super()._add_global_metadata(
+            result_ds, start_year, end_year, pipeline_name, indices_count, additional_attrs
+        )
+
+        # Add multivariate-specific metadata
+        result_ds.attrs['description'] = 'Compound climate extreme indices combining temperature and precipitation'
+        result_ds.attrs['baseline_period'] = PipelineConfig.BASELINE_PERIOD
+        result_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
+        result_ds.attrs['note'] = (
+            'Multivariate compound extremes using day-of-year percentile thresholds from 1981-2000 baseline. '
+            'Cold/warm thresholds: 25th/75th percentile of temperature. '
+            'Dry/wet thresholds: 25th/75th percentile of precipitation (wet days only). '
+            'Processed with parallel spatial tiling for optimal memory and performance.'
+        )
+
+        return result_ds
 
 
 def main():
     """Main entry point with command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Multivariate Climate Indices Pipeline: Calculate 4 compound extreme indices combining temperature and precipitation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Process default period (1981-2024)
-  python multivariate_pipeline.py
+    indices_list = """
+  Compound Extreme Indices (4 total):
+  - Cold and dry days: Temperature < 25th percentile AND precipitation < 25th percentile
+  - Cold and wet days: Temperature < 25th percentile AND precipitation > 75th percentile
+  - Warm and dry days: Temperature > 75th percentile AND precipitation < 25th percentile
+  - Warm and wet days: Temperature > 75th percentile AND precipitation > 75th percentile
+"""
+
+    examples = """
+  # Process with 2 tiles (east/west split)
+  python multivariate_pipeline.py --n-tiles 2
+
+  # Process with 4 tiles (quadrants, default)
+  python multivariate_pipeline.py --n-tiles 4
 
   # Process single year
   python multivariate_pipeline.py --start-year 2023 --end-year 2023
+"""
 
-  # Process with custom output directory
-  python multivariate_pipeline.py --output-dir ./results
-        """
+    parser = PipelineCLI.create_parser(
+        "Multivariate Climate Indices",
+        "Calculate 4 compound extreme indices combining temperature and precipitation",
+        indices_list,
+        examples
     )
 
     parser.add_argument(
-        '--start-year',
+        '--n-tiles',
         type=int,
-        default=1981,
-        help='Start year for processing (default: 1981)'
-    )
-
-    parser.add_argument(
-        '--end-year',
-        type=int,
-        default=2024,
-        help='End year for processing (default: 2024)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default='./outputs',
-        help='Output directory for results (default: ./outputs)'
-    )
-
-    parser.add_argument(
-        '--chunk-years',
-        type=int,
-        default=1,
-        help='Number of years to process per chunk (default: 1 for memory efficiency)'
-    )
-
-    parser.add_argument(
-        '--dashboard',
-        action='store_true',
-        help='Enable Dask dashboard on port 8787'
-    )
-
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-
-    parser.add_argument(
-        '--show-warnings',
-        action='store_true',
-        help='Show all warnings (default: suppressed)'
+        default=4,
+        choices=[2, 4, 8],
+        help='Number of spatial tiles: 2 (east/west), 4 (quadrants), or 8 (octants) (default: 4)'
     )
 
     args = parser.parse_args()
 
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Handle common setup (logging, warnings)
+    PipelineCLI.handle_common_setup(args)
 
-    # Re-enable warnings if requested
-    if args.show_warnings:
-        warnings.resetwarnings()
-        logger.info("Warnings enabled")
+    # Validate year range
+    PipelineCLI.validate_years(args.start_year, args.end_year)
 
     # Create and run pipeline
     pipeline = MultivariatePipeline(
+        n_tiles=args.n_tiles,
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard
     )
