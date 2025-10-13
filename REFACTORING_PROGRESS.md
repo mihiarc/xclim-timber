@@ -1,8 +1,210 @@
 # Pipeline Refactoring Progress Report
 
 **Date:** 2025-10-13
-**Status:** Temperature Pipeline Refactored (Issues #1-3) ✅
-**Next:** Abstract Spatial Tiling (Issue #13) - CRITICAL BEFORE #4-9
+**Status:** 3/7 Pipelines Refactored (Temperature, Precipitation, Drought) ✅
+**Progress:** 43% complete
+**Next:** Multivariate Pipeline (Issue #84) - Highest memory benefit from spatial tiling
+
+---
+
+## ✅ Issue #83: Drought Pipeline Refactored (COMPLETE)
+
+**Merged:** Commit 53a3840 on 2025-10-13
+**Time Invested:** ~2 hours
+
+### Code Reduction
+- **Before:** 714 lines
+- **After:** 635 lines
+- **Reduction:** 79 lines (-11%)
+
+### Implementation Summary
+Refactored drought_pipeline.py to use BasePipeline + SpatialTilingMixin inheritance pattern, adding parallel spatial tiling support for memory-efficient processing of 12 drought indices.
+
+**Changes:**
+- Inherits from BasePipeline + SpatialTilingMixin (multiple inheritance)
+- Added parallel spatial tiling (2, 4, or 8 tiles)
+- Smart SPI calibration handling (loads 1981-2010 + target years, filters after computation)
+- Thread-safe baseline percentile access with locking
+- Eliminates ~79 lines of infrastructure duplication
+
+**Preserved Functionality:**
+- All 12 drought indices: 5 SPI + 4 dry spell + 3 intensity
+- SPI windows: 1, 3, 6, 12, 24 months (gamma distribution, McKee et al. 1993)
+- Dry spell: CDD, frequency, total length, dry days
+- Intensity: SDII, max 7-day precipitation, heavy precip fraction
+- CF-compliant metadata with calibration period documentation
+
+### SPI Calibration Handling
+**Challenge:** SPI requires 30-year calibration period (1981-2010) but we want to process individual years.
+
+**Solution:**
+```python
+# Lines 479-488: Load extended period for calibration
+spi_start_year = min(target_start_year, 1981)
+ds_extended = full_zarr.sel(time=slice(f'{spi_start_year}-01-01', f'{target_end_year}-12-31'))
+
+# Lines 427-441: Filter results to target years after SPI computation
+if self.target_start_year and self.target_end_year:
+    if data_start_year < self.target_start_year:
+        spi_indices[key] = spi_indices[key].sel(
+            time=slice(f'{self.target_start_year}-01-01', f'{self.target_end_year}-12-31')
+        )
+```
+
+### Thread Safety
+- Added `baseline_lock` for concurrent baseline percentile access during parallel tile processing
+- Thread-safe baseline subsetting in `_process_single_tile`
+- Proper cleanup with try-finally blocks
+
+### Reviews Completed
+**Code Review:** 8.5/10 ✓ APPROVED with minor recommendations
+- Excellent multiple inheritance pattern
+- Sophisticated SPI calibration handling
+- Thread-safe baseline access
+- Comprehensive error handling
+- Minor recommendation: Consider refactoring target year state management (post-merge)
+
+**Architecture Review:** 9.5/10 ✓ APPROVED FOR MERGE
+- Exceptional pattern consistency with temperature/precipitation
+- Elegant SPI calibration solution
+- Robust parallel processing architecture
+- Excellent code reuse
+- Strong metadata and documentation
+
+### Refactoring Progress
+| Pipeline | Status | Lines | Reduction |
+|----------|--------|-------|-----------|
+| Temperature | ✅ Merged | 656 → 483 | -26% |
+| Precipitation | ✅ Merged | 630 → 480 | -24% |
+| **Drought** | ✅ **Merged** | **714 → 635** | **-11%** |
+| Multivariate | 📋 Next | 593 → ~220 | TBD |
+| Agricultural | 📋 Queued | 505 → ~180 | TBD |
+| Human Comfort | 📋 Queued | 502 → ~180 | TBD |
+| Humidity | 📋 Queued | 430 → ~150 | TBD |
+
+**Progress:** 3/7 pipelines refactored (43%)
+
+---
+
+## ✅ Issue #82: Precipitation Pipeline Refactored (COMPLETE)
+
+**Merged:** Commit cfab60b on 2025-10-13
+**Time Invested:** ~2 hours
+
+### Code Reduction
+- **Before:** 630 lines
+- **After:** 480 lines
+- **Reduction:** 150 lines (-24%)
+
+### Implementation Summary
+Refactored precipitation_pipeline.py to use BasePipeline + SpatialTilingMixin, adding parallel spatial tiling support for all 13 precipitation indices.
+
+**Changes:**
+- Inherits from BasePipeline + SpatialTilingMixin
+- Added parallel spatial tiling (2, 4, or 8 tiles)
+- Thread-safe baseline percentile access
+- Eliminates ~150 lines of infrastructure duplication
+
+**Preserved Functionality:**
+- All 13 precipitation indices preserved
+- Basic (6): prcptot, rx1day, rx5day, sdii, cdd, cwd
+- Extreme (2): r95p, r99p (percentile-based)
+- Threshold (2): r10mm, r20mm
+- Enhanced (3): dry_days, wetdays, wetdays_prop
+
+### Reviews Completed
+**Code Review:** 9/10 ✓ APPROVED
+**Architecture Review:** 9.4/10 ✓ APPROVED WITH HIGH COMMENDATION
+
+---
+
+## ✅ Issue #80: Spatial Tiling Abstraction (COMPLETE)
+
+**Created:** 2025-10-13 (Issue #80 - replaces planned Issue #13)
+**Completed:** 2025-10-13 (same day!)
+**Time Invested:** ~2 hours
+
+### Code Created
+**New Files:**
+- `core/spatial_tiling.py` - SpatialTilingMixin class (396 lines)
+
+**Modified Files:**
+- `core/__init__.py` - Added SpatialTilingMixin export
+- `temperature_pipeline.py` - Refactored to use mixin (792 → 652 lines, **-18%**)
+
+### Implementation Summary
+Created `SpatialTilingMixin` that provides reusable spatial tiling infrastructure:
+
+**Features:**
+- Configurable tiling (2, 4, or 8 tiles)
+- Parallel processing with ThreadPoolExecutor
+- Thread-safe NetCDF writes with global lock
+- Automatic tile merging with dimension validation
+- Resource cleanup and memory management
+- Extensible via override hooks (_process_single_tile)
+
+**Temperature Pipeline Changes:**
+- Now inherits from both BasePipeline and SpatialTilingMixin
+- Removed ~140 lines of embedded tiling code
+- Overrides `_process_single_tile()` to handle baseline percentiles
+- Uses mixin's `process_with_spatial_tiling()` method
+- All functionality preserved, cleaner architecture
+
+### Testing Results
+**4-tile configuration (quadrants):**
+```bash
+python temperature_pipeline.py --start-year 2023 --end-year 2023 --n-tiles 4
+# ✅ All 4 tiles completed successfully
+# ✅ Merged to dimensions: {time: 1, lat: 621, lon: 1405}
+# ✅ 35 indices calculated
+# ✅ Output: 29K NetCDF file
+```
+
+**2-tile configuration (east/west):**
+```bash
+python temperature_pipeline.py --start-year 2023 --end-year 2023 --n-tiles 2
+# ✅ Both tiles completed successfully
+# ✅ Merged correctly
+# ✅ Output: 29K NetCDF file (identical to 4-tile)
+```
+
+### Benefits Achieved
+1. **Code Reuse:** 396 lines of tiling infrastructure now available to ALL pipelines
+2. **Eliminates Future Duplication:** Prevents 1,000+ lines of duplicate code across 6 pipelines
+3. **Consistent Behavior:** All pipelines will use same tiling implementation
+4. **Easy Maintenance:** Fix bugs in one place, all pipelines benefit
+5. **Extensible:** Easy to add 8-tile support or other tiling strategies
+
+### Usage Example for Other Pipelines
+```python
+from core import BasePipeline, SpatialTilingMixin, PipelineConfig
+
+class MyPipeline(BasePipeline, SpatialTilingMixin):
+    def __init__(self, **kwargs):
+        BasePipeline.__init__(
+            self,
+            zarr_paths={'data': PipelineConfig.MY_ZARR},
+            **kwargs
+        )
+        SpatialTilingMixin.__init__(self, n_tiles=4)
+
+    def _calculate_all_indices(self, datasets):
+        ds = datasets['data']
+        expected_dims = {'time': 1, 'lat': 621, 'lon': 1405}
+        return self.process_with_spatial_tiling(
+            ds=ds,
+            output_dir=Path('./outputs'),
+            expected_dims=expected_dims
+        )
+```
+
+### Success Criteria
+- ✅ `core/spatial_tiling.py` created with SpatialTilingMixin (~396 lines)
+- ✅ TemperaturePipeline refactored to use mixin (reduced by 140 lines)
+- ✅ 2-tile and 4-tile modes tested and validated
+- ✅ Output files verified (correct dimensions and indices)
+- ✅ Documentation updated with mixin usage examples
+- ✅ All spatial tiling code eliminated from temperature pipeline
 
 ---
 
