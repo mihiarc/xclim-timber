@@ -37,6 +37,19 @@ declare -A PIPELINE_INDICES_COUNT=(
     ["multivariate"]=4
 )
 
+# Recommended tile counts per pipeline (avoid threading deadlocks)
+# Issue: 4 parallel threads calling compute() simultaneously causes deadlock
+# Solution: Use 2 tiles for precipitation/drought to avoid parallel compute() deadlock
+declare -A PIPELINE_DEFAULT_TILES=(
+    ["temperature"]=4      # Works fine with 4 tiles
+    ["precipitation"]=2    # Use 2 tiles - 4 causes threading deadlock
+    ["drought"]=2          # Use 2 tiles - 4 causes threading deadlock
+    ["agricultural"]=4     # Simple calculations, 4 tiles OK
+    ["humidity"]=4         # Simple calculations, 4 tiles OK
+    ["human_comfort"]=4    # Simple calculations, 4 tiles OK
+    ["multivariate"]=4     # Works fine with 4 tiles
+)
+
 # Check if pipeline exists
 # Usage: validate_pipeline PIPELINE_NAME
 validate_pipeline() {
@@ -114,6 +127,13 @@ run_pipeline_year() {
 
     # Ensure output directory exists
     mkdir -p "$output_dir"
+
+    # Get recommended tile count for this pipeline (if not overridden in extra_args)
+    local tiles=${PIPELINE_DEFAULT_TILES[$pipeline]}
+    if [ -n "$tiles" ] && [[ ! "$extra_args" =~ "--n-tiles" ]]; then
+        extra_args="--n-tiles $tiles $extra_args"
+        log_debug "Using $tiles tiles for $pipeline (recommended default)"
+    fi
 
     # Run pipeline
     log_info "Running $pipeline pipeline for year $year"
