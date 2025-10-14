@@ -320,8 +320,9 @@ class BasePipeline(ABC):
             len(all_indices)
         )
 
-        # Save output
-        output_file = output_dir / f'{pipeline_name}_indices_{start_year}_{end_year}.nc'
+        # Save output - sanitize pipeline_name to prevent path traversal
+        safe_pipeline_name = os.path.basename(pipeline_name)
+        output_file = output_dir / f'{safe_pipeline_name}_indices_{start_year}_{end_year}.nc'
         self._save_result(result_ds, output_file)
 
         # Report metrics
