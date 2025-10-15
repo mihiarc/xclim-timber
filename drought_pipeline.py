@@ -38,7 +38,7 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
         Initialize the pipeline with parallel spatial tiling.
 
         Args:
-            n_tiles: Number of spatial tiles (2, 4, or 8, default: 4 for quadrants)
+            n_tiles: Number of spatial tiles (1, 2, 4, or 8, default: 4 for quadrants)
             **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
         # Initialize BasePipeline
@@ -165,6 +165,12 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
                     cal_start=self.spi_cal_start,    # 30-year calibration period
                     cal_end=self.spi_cal_end
                 )
+
+                # Compute immediately to avoid task graph accumulation
+                # Use synchronous scheduler to avoid threading conflicts with parallel tiles
+                logger.info(f"  - Computing {var_name}...")
+                with dask.config.set(scheduler='synchronous'):
+                    spi = spi.compute()
 
                 indices[var_name] = spi
 
@@ -427,13 +433,8 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
         try:
             # Calculate SPI indices (uses full calibration period)
+            # Note: SPI indices are now computed immediately inside calculate_spi_indices()
             spi_indices = self.calculate_spi_indices(tile_ds)
-
-            # Compute SPI results immediately (avoid lazy-loading issues)
-            logger.info(f"    Computing SPI for {tile_name}...")
-            with dask.config.set(scheduler='threads'):
-                for key in spi_indices.keys():
-                    spi_indices[key] = spi_indices[key].compute()
 
             # Filter SPI results to target years (if we loaded extended calibration period)
             if self.target_start_year and self.target_end_year:
@@ -577,11 +578,11 @@ def main():
 """
 
     examples = """
+  # Process with 1 tile (no parallelism, recommended for drought to avoid threading deadlock)
+  python drought_pipeline.py --n-tiles 1
+
   # Process with 2 tiles (east/west split)
   python drought_pipeline.py --n-tiles 2
-
-  # Process with 4 tiles (quadrants, default)
-  python drought_pipeline.py --n-tiles 4
 
   # Process single year
   python drought_pipeline.py --start-year 2023 --end-year 2023
@@ -598,8 +599,8 @@ def main():
         '--n-tiles',
         type=int,
         default=4,
-        choices=[2, 4, 8],
-        help='Number of spatial tiles: 2 (east/west), 4 (quadrants), or 8 (octants) (default: 4)'
+        choices=[1, 2, 4, 8],
+        help='Number of spatial tiles: 1 (no tiling), 2 (east/west), 4 (quadrants), or 8 (octants) (default: 4)'
     )
 
     args = parser.parse_args()

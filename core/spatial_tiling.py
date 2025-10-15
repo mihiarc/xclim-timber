@@ -48,13 +48,14 @@ class SpatialTilingMixin:
         Initialize spatial tiling configuration.
 
         Args:
-            n_tiles: Number of spatial tiles (2, 4, or 8)
+            n_tiles: Number of spatial tiles (1, 2, 4, or 8)
+                    1 = no tiling (process full domain, no parallelism)
                     2 = east/west split (2x1 grid)
                     4 = quadrants (2x2 grid)
                     8 = octants (2x4 or 4x2 grid)
         """
-        if n_tiles not in [2, 4, 8]:
-            raise ValueError(f"n_tiles must be 2, 4, or 8, got {n_tiles}")
+        if n_tiles not in [1, 2, 4, 8]:
+            raise ValueError(f"n_tiles must be 1, 2, 4, or 8, got {n_tiles}")
 
         self.n_tiles = n_tiles
         self.use_spatial_tiling = True
@@ -100,7 +101,12 @@ class SpatialTilingMixin:
         lat_mid = len(lat_vals) // 2
         lon_mid = len(lon_vals) // 2
 
-        if self.n_tiles == 2:
+        if self.n_tiles == 1:
+            # No tiling - process full domain (no parallelism)
+            tiles = [
+                (slice(None), slice(None), "full")
+            ]
+        elif self.n_tiles == 2:
             # Split east-west (2x1 grid)
             tiles = [
                 (slice(None), slice(0, lon_mid), "west"),
@@ -250,7 +256,10 @@ class SpatialTilingMixin:
         tile_datasets = [xr.open_dataset(f, chunks='auto') for f in tile_files]
 
         # Concatenate based on number of tiles
-        if self.n_tiles == 2:
+        if self.n_tiles == 1:
+            # Single tile - no merging needed
+            merged_ds = tile_datasets[0]
+        elif self.n_tiles == 2:
             # West + East (lon concatenation)
             merged_ds = xr.concat(tile_datasets, dim='lon')
 
@@ -420,7 +429,9 @@ class SpatialTilingMixin:
         Returns:
             List of tile files in concatenation order
         """
-        if self.n_tiles == 2:
+        if self.n_tiles == 1:
+            return [tile_files_dict['full']]
+        elif self.n_tiles == 2:
             return [tile_files_dict['west'], tile_files_dict['east']]
         elif self.n_tiles == 4:
             return [

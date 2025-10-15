@@ -38,12 +38,14 @@ declare -A PIPELINE_INDICES_COUNT=(
 )
 
 # Recommended tile counts per pipeline (avoid threading deadlocks)
-# Issue: 4 parallel threads calling compute() simultaneously causes deadlock
-# Solution: Use 2 tiles for precipitation/drought to avoid parallel compute() deadlock
+# Issue: Nested parallelism (Dask + BLAS) causes deadlocks - fixed with BLAS env vars
+# - Temperature: 4 tiles works fine
+# - Precipitation: 2 tiles works (4 causes deadlock in ThreadPoolExecutor)
+# - Drought: 4 tiles works with BLAS threading disabled (1 tile overwhelms RAM)
 declare -A PIPELINE_DEFAULT_TILES=(
     ["temperature"]=4      # Works fine with 4 tiles
     ["precipitation"]=2    # Use 2 tiles - 4 causes threading deadlock
-    ["drought"]=2          # Use 2 tiles - 4 causes threading deadlock
+    ["drought"]=4          # Use 4 tiles - requires BLAS threading disabled (set in run_pipeline_year)
     ["agricultural"]=4     # Simple calculations, 4 tiles OK
     ["humidity"]=4         # Simple calculations, 4 tiles OK
     ["human_comfort"]=4    # Simple calculations, 4 tiles OK
@@ -137,6 +139,13 @@ run_pipeline_year() {
 
     # Run pipeline
     log_info "Running $pipeline pipeline for year $year"
+
+    # Set BLAS threading environment variables to prevent deadlocks
+    # Fix for nested parallelism: Dask + scipy/numpy BLAS libraries
+    # See: https://github.com/Ouranosinc/xclim/issues/1270
+    export MKL_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export OMP_NUM_THREADS=1
 
     python "$script" \
         --start-year "$year" \
