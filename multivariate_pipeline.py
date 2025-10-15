@@ -68,26 +68,9 @@ class MultivariatePipeline(BasePipeline, SpatialTilingMixin):
         Returns:
             Dictionary with tas_25p, tas_75p, pr_25p, pr_75p thresholds
         """
-        # Get temperature baselines
-        temp_baselines = self.baseline_loader.get_temperature_baselines()
-
-        # Get precipitation baselines
-        precip_baselines = self.baseline_loader.get_precipitation_baselines()
-
-        # Combine and filter to only the percentiles needed for multivariate indices
-        multivariate_baselines = {}
-
-        # Temperature percentiles (25th and 75th for cold/warm)
-        if 'tas_25p_threshold' in temp_baselines:
-            multivariate_baselines['tas_25p_threshold'] = temp_baselines['tas_25p_threshold']
-        if 'tas_75p_threshold' in temp_baselines:
-            multivariate_baselines['tas_75p_threshold'] = temp_baselines['tas_75p_threshold']
-
-        # Precipitation percentiles (25th and 75th for dry/wet)
-        if 'pr_25p_threshold' in precip_baselines:
-            multivariate_baselines['pr_25p_threshold'] = precip_baselines['pr_25p_threshold']
-        if 'pr_75p_threshold' in precip_baselines:
-            multivariate_baselines['pr_75p_threshold'] = precip_baselines['pr_75p_threshold']
+        # Load multivariate-specific baselines directly
+        # These are stored separately in the baseline file (tas_25p, tas_75p, pr_25p, pr_75p)
+        multivariate_baselines = self.baseline_loader.get_multivariate_baselines()
 
         # Validate we have all required percentiles
         required = ['tas_25p_threshold', 'tas_75p_threshold', 'pr_25p_threshold', 'pr_75p_threshold']
@@ -198,12 +181,13 @@ class MultivariatePipeline(BasePipeline, SpatialTilingMixin):
         indices = self.calculate_multivariate_indices(ds)
         return indices
 
-    def calculate_multivariate_indices(self, ds: xr.Dataset) -> dict:
+    def calculate_multivariate_indices(self, ds: xr.Dataset, baselines: Dict[str, xr.DataArray] = None) -> dict:
         """
         Calculate multivariate compound climate extreme indices.
 
         Args:
             ds: Dataset with temperature and precipitation variables (tas, pr)
+            baselines: Optional baseline percentiles dict. If None, uses self.baselines
 
         Returns:
             Dictionary of calculated indices
@@ -215,18 +199,22 @@ class MultivariatePipeline(BasePipeline, SpatialTilingMixin):
             logger.warning("Missing required variables (tas or pr) for multivariate indices")
             return indices
 
+        # Use provided baselines or fall back to instance baselines
+        if baselines is None:
+            baselines = self.baselines
+
         # Validate we have all required baseline percentiles
         required = ['tas_25p_threshold', 'tas_75p_threshold', 'pr_25p_threshold', 'pr_75p_threshold']
-        missing = [p for p in required if p not in self.baselines]
+        missing = [p for p in required if p not in baselines]
         if missing:
             logger.warning(f"Missing baseline percentiles: {missing}. Skipping multivariate indices.")
             return indices
 
         # Use pre-calculated baseline percentiles
-        tas_25 = self.baselines['tas_25p_threshold']
-        tas_75 = self.baselines['tas_75p_threshold']
-        pr_25 = self.baselines['pr_25p_threshold']
-        pr_75 = self.baselines['pr_75p_threshold']
+        tas_25 = baselines['tas_25p_threshold']
+        tas_75 = baselines['tas_75p_threshold']
+        pr_25 = baselines['pr_25p_threshold']
+        pr_75 = baselines['pr_75p_threshold']
 
         logger.info("  Calculating 4 compound extreme indices using baseline percentiles...")
 
@@ -331,21 +319,16 @@ class MultivariatePipeline(BasePipeline, SpatialTilingMixin):
 
         # Subset baseline percentiles to match tile (thread-safe)
         with self.baseline_lock:
-            tile_baselines_temp = {
-                key: baseline.isel(lat=lat_slice, lon=lon_slice)
-                for key, baseline in self.baselines.items()
-            }
+            tile_baselines = {}
+            for key, baseline in self.baselines.items():
+                # Slice baseline spatially to match tile dimensions
+                # Note: Coordinates already match perfectly, no reindexing needed
+                tile_baselines[key] = baseline.isel(lat=lat_slice, lon=lon_slice)
 
-        # Temporarily replace baselines with tile-specific versions
-        original_baselines = self.baselines
-        self.baselines = tile_baselines_temp
-
-        try:
-            # Calculate multivariate indices for this tile
-            tile_indices = self.calculate_multivariate_indices(tile_ds)
-        finally:
-            # Restore original baselines
-            self.baselines = original_baselines
+        # CRITICAL FIX for Issue #85: Pass baselines as parameter instead of modifying instance attribute
+        # Modifying self.baselines causes race conditions in parallel processing where threads
+        # overwrite each other's baseline arrays, resulting in coordinate mismatches
+        tile_indices = self.calculate_multivariate_indices(tile_ds, baselines=tile_baselines)
 
         return tile_indices
 
