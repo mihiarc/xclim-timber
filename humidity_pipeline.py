@@ -7,16 +7,17 @@ Calculates 8 humidity indices including vapor pressure deficit, dewpoint, and mo
 
 import logging
 import sys
+from pathlib import Path
 from typing import Dict
 
 import xarray as xr
 
-from core import BasePipeline, PipelineConfig, PipelineCLI
+from core import BasePipeline, PipelineConfig, PipelineCLI, SpatialTilingMixin
 
 logger = logging.getLogger(__name__)
 
 
-class HumidityPipeline(BasePipeline):
+class HumidityPipeline(BasePipeline, SpatialTilingMixin):
     """
     Memory-efficient humidity indices pipeline using Zarr streaming.
     Processes 8 humidity indices without loading full dataset into memory.
@@ -28,19 +29,24 @@ class HumidityPipeline(BasePipeline):
     - VPD thresholds (2): Extreme VPD days (>4 kPa), low VPD days (<0.5 kPa)
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, n_tiles: int = 4, **kwargs):
         """
-        Initialize the pipeline.
+        Initialize the pipeline with parallel spatial tiling.
 
         Args:
+            n_tiles: Number of spatial tiles (2, 4, or 8, default: 4 for quadrants)
             **kwargs: Additional arguments passed to BasePipeline (chunk_years, enable_dashboard)
         """
         # Initialize BasePipeline with humidity Zarr store
-        super().__init__(
+        BasePipeline.__init__(
+            self,
             zarr_paths={'humidity': PipelineConfig.HUMIDITY_ZARR},
             chunk_config=PipelineConfig.DEFAULT_CHUNKS,
             **kwargs
         )
+
+        # Initialize SpatialTilingMixin
+        SpatialTilingMixin.__init__(self, n_tiles=n_tiles)
 
     def _preprocess_datasets(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.Dataset]:
         """
@@ -98,39 +104,39 @@ class HumidityPipeline(BasePipeline):
         # Dewpoint temperature statistics
         if 'tdew' in ds:
             logger.info("  - Calculating annual mean dewpoint temperature...")
-            indices_dict['dewpoint_mean'] = ds.tdew.groupby('time.year').mean(dim='time')
+            indices_dict['dewpoint_mean'] = ds.tdew.resample(time='YS').mean()
 
             logger.info("  - Calculating annual minimum dewpoint temperature...")
-            indices_dict['dewpoint_min'] = ds.tdew.groupby('time.year').min(dim='time')
+            indices_dict['dewpoint_min'] = ds.tdew.resample(time='YS').min()
 
             logger.info("  - Calculating annual maximum dewpoint temperature...")
-            indices_dict['dewpoint_max'] = ds.tdew.groupby('time.year').max(dim='time')
+            indices_dict['dewpoint_max'] = ds.tdew.resample(time='YS').max()
 
             # Days with high humidity (dewpoint > 18°C indicates uncomfortable humidity)
             logger.info("  - Calculating humid days (dewpoint > 18°C)...")
             humid_threshold = 18.0  # degrees C
-            humid_days = (ds.tdew > humid_threshold).groupby('time.year').sum(dim='time')
+            humid_days = (ds.tdew > humid_threshold).resample(time='YS').sum()
             indices_dict['humid_days'] = humid_days
 
         # Vapor pressure deficit statistics
         if 'vpdmax' in ds:
             logger.info("  - Calculating annual mean maximum VPD...")
-            indices_dict['vpdmax_mean'] = ds.vpdmax.groupby('time.year').mean(dim='time')
+            indices_dict['vpdmax_mean'] = ds.vpdmax.resample(time='YS').mean()
 
             logger.info("  - Calculating extreme VPD days (>4 kPa)...")
             # High VPD indicates water stress for plants
             extreme_vpd_threshold = 4.0  # kPa
-            extreme_vpd_days = (ds.vpdmax > extreme_vpd_threshold).groupby('time.year').sum(dim='time')
+            extreme_vpd_days = (ds.vpdmax > extreme_vpd_threshold).resample(time='YS').sum()
             indices_dict['extreme_vpd_days'] = extreme_vpd_days
 
         if 'vpdmin' in ds:
             logger.info("  - Calculating annual mean minimum VPD...")
-            indices_dict['vpdmin_mean'] = ds.vpdmin.groupby('time.year').mean(dim='time')
+            indices_dict['vpdmin_mean'] = ds.vpdmin.resample(time='YS').mean()
 
             # Low VPD days (vpdmin < 0.5 kPa indicates high moisture/fog potential)
             logger.info("  - Calculating low VPD days (<0.5 kPa)...")
             low_vpd_threshold = 0.5  # kPa
-            low_vpd_days = (ds.vpdmin < low_vpd_threshold).groupby('time.year').sum(dim='time')
+            low_vpd_days = (ds.vpdmin < low_vpd_threshold).resample(time='YS').sum()
             indices_dict['low_vpd_days'] = low_vpd_days
 
         # Add proper metadata to all indices
@@ -150,6 +156,82 @@ class HumidityPipeline(BasePipeline):
                 data_array.attrs['standard_name'] = 'number_of_days_with_high_humidity'
 
         return indices_dict
+
+    def _process_single_tile(
+        self,
+        ds: xr.Dataset,
+        lat_slice: slice,
+        lon_slice: slice,
+        tile_name: str
+    ) -> Dict[str, xr.DataArray]:
+        """
+        Process a single spatial tile (humidity-specific override).
+
+        This override ensures the humidity dataset is passed with the correct key
+        to calculate_indices().
+
+        Args:
+            ds: Full humidity dataset
+            lat_slice: Latitude slice for this tile
+            lon_slice: Longitude slice for this tile
+            tile_name: Name of this tile (for logging)
+
+        Returns:
+            Dictionary of calculated indices for this tile
+        """
+        logger.info(f"  Processing tile: {tile_name}")
+
+        # Select spatial subset
+        tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
+
+        # Calculate indices for this tile
+        # Pass with 'humidity' key to match calculate_indices() expectations
+        tile_indices = self.calculate_indices({'humidity': tile_ds})
+
+        return tile_indices
+
+    def _calculate_all_indices(self, datasets: Dict[str, xr.Dataset]) -> Dict[str, xr.DataArray]:
+        """
+        Override to implement spatial tiling for humidity indices.
+
+        Uses the SpatialTilingMixin to process the dataset in parallel spatial tiles
+        for better memory efficiency and performance, then merges the results.
+
+        Args:
+            datasets: Dictionary with 'humidity' dataset
+
+        Returns:
+            Dictionary mapping index name to calculated DataArray
+        """
+        humidity_ds = datasets['humidity']
+
+        # Define expected dimensions for validation
+        # PRISM CONUS dimensions: 621 lat × 1405 lon
+        # Time dimension after annual aggregation (freq='YS'):
+        #   - Single year: time=1
+        #   - Multiple years: time=num_years
+        import pandas as pd
+        start_year = pd.Timestamp(humidity_ds.time.values[0]).year
+        end_year = pd.Timestamp(humidity_ds.time.values[-1]).year
+        num_years = end_year - start_year + 1
+        expected_dims = {
+            'time': num_years,  # Number of years (aggregated to annual)
+            'lat': 621,
+            'lon': 1405
+        }
+
+        # Create temporary directory for tiles
+        output_dir = Path('./outputs')
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use the mixin's spatial tiling functionality
+        all_indices = self.process_with_spatial_tiling(
+            ds=humidity_ds,
+            output_dir=output_dir,
+            expected_dims=expected_dims
+        )
+
+        return all_indices
 
     def _add_global_metadata(
         self,
@@ -188,7 +270,9 @@ class HumidityPipeline(BasePipeline):
             'humid_days: dewpoint > 18°C; extreme_vpd_days: vpdmax > 4 kPa; '
             'low_vpd_days: vpdmin < 0.5 kPa'
         )
+        result_ds.attrs['processing'] = f'Parallel processing of {self.n_tiles} spatial tiles'
         result_ds.attrs['note'] = (
+            'Processed with parallel spatial tiling for optimal memory and performance. '
             'Count indices stored as dimensionless (units=1) to prevent CF timedelta encoding. '
             'All statistics computed from daily PRISM humidity data.'
         )
@@ -206,8 +290,11 @@ def main():
 """
 
     examples = """
-  # Process default period (1981-2024)
-  python humidity_pipeline.py
+  # Process with 2 tiles (east/west split)
+  python humidity_pipeline.py --n-tiles 2
+
+  # Process with 4 tiles (quadrants, default)
+  python humidity_pipeline.py --n-tiles 4
 
   # Process single year
   python humidity_pipeline.py --start-year 2023 --end-year 2023
@@ -223,6 +310,14 @@ def main():
         examples
     )
 
+    parser.add_argument(
+        '--n-tiles',
+        type=int,
+        default=4,
+        choices=[2, 4, 8],
+        help='Number of spatial tiles: 2 (east/west), 4 (quadrants), or 8 (octants) (default: 4)'
+    )
+
     args = parser.parse_args()
 
     # Handle common setup (logging, warnings)
@@ -233,6 +328,7 @@ def main():
 
     # Create and run pipeline
     pipeline = HumidityPipeline(
+        n_tiles=args.n_tiles,
         chunk_years=args.chunk_years,
         enable_dashboard=args.dashboard
     )
