@@ -60,6 +60,11 @@ class SpatialTilingMixin:
         self.n_tiles = n_tiles
         self.use_spatial_tiling = True
 
+        # Generate unique tile ID to prevent file collisions when multiple pipelines run concurrently
+        import os
+        import uuid
+        self._tile_id = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
+
     def _get_spatial_tiles(self, ds: xr.Dataset) -> List[Tuple[slice, slice, str]]:
         """
         Calculate spatial tile boundaries.
@@ -201,7 +206,8 @@ class SpatialTilingMixin:
         if hasattr(self, 'fix_count_indices'):
             tile_ds = self.fix_count_indices(tile_ds)
 
-        tile_file = output_dir / f'tile_{tile_name}.nc'
+        # Use unique tile ID to prevent file collisions between concurrent pipeline runs
+        tile_file = output_dir / f'tile_{self._tile_id}_{tile_name}.nc'
         logger.info(f"  Saving tile {tile_name} to {tile_file}...")
 
         # Compute dataset before NetCDF write to avoid Dask scheduler thread safety issues
