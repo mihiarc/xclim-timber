@@ -135,12 +135,20 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
         Returns:
             Dictionary of calculated SPI indices (5 windows)
+
+        Raises:
+            ValueError: If 'pr' variable not found
+            RuntimeError: If all SPI calculations fail
         """
         indices = {}
+        errors = []
 
         if 'pr' not in precip_ds:
-            logger.warning("Precipitation variable 'pr' not found, skipping SPI calculation")
-            return indices
+            raise ValueError(
+                "Precipitation variable 'pr' not found in dataset. "
+                f"Available variables: {list(precip_ds.data_vars)}. "
+                "Check preprocessing in _preprocess_datasets()."
+            )
 
         # Define SPI windows (in months)
         spi_windows = {
@@ -156,6 +164,8 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
                 logger.info(f"  - Calculating {var_name} (SPI-{window})...")
 
                 # Calculate SPI using gamma distribution (McKee et al. 1993)
+                # Note: xclim automatically handles zero-inflation (zero_inflated=True is hardcoded)
+                # Results are bounded at ±8.21 as per xclim implementation
                 spi = atmos.standardized_precipitation_index(
                     pr=precip_ds.pr,
                     freq='MS',              # Monthly frequency (required for SPI)
@@ -168,9 +178,37 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
                 # Compute immediately to avoid task graph accumulation
                 # Use synchronous scheduler to avoid threading conflicts with parallel tiles
+                # FIX: Use compute() parameter instead of dask.config.set() for thread safety
                 logger.info(f"  - Computing {var_name}...")
-                with dask.config.set(scheduler='synchronous'):
-                    spi = spi.compute()
+                spi = spi.compute(scheduler='synchronous')
+
+                # FIX: Validate SPI calculation quality (gamma fit may fail in arid regions)
+                logger.info(f"  - Validating {var_name} quality...")
+                nan_fraction = float(spi.isnull().sum() / spi.size)
+
+                if nan_fraction > 0.1:  # More than 10% NaN
+                    logger.warning(
+                        f"{var_name}: {nan_fraction*100:.1f}% of values are NaN. "
+                        f"This may indicate insufficient precipitation data for gamma distribution fitting "
+                        f"in arid regions. Consider using 'gamma-lmoments' method for robustness."
+                    )
+                elif nan_fraction > 0:
+                    logger.info(f"{var_name}: {nan_fraction*100:.2f}% NaN values (expected in arid areas)")
+
+                # Check for unrealistic extreme values
+                # xclim bounds SPI at ±8.21, but most values should be in [-3, 3] range
+                # Values beyond ±5 are extremely rare and may indicate fitting issues
+                extreme_vals = (spi < -5) | (spi > 5)
+                extreme_count = int(extreme_vals.sum())
+                if extreme_count > 0:
+                    extreme_pct = (extreme_count / spi.size) * 100
+                    if extreme_pct > 1.0:  # More than 1% extreme
+                        logger.warning(
+                            f"{var_name}: {extreme_count} extreme values detected ({extreme_pct:.2f}% beyond ±5). "
+                            f"This may indicate gamma fit issues. xclim bounds values at ±8.21."
+                        )
+                    else:
+                        logger.debug(f"{var_name}: {extreme_count} extreme values (within acceptable range, xclim bounds at ±8.21)")
 
                 # Drop prob_of_zero coordinate to avoid merge conflicts across tiles
                 # This is SPI internal metadata not needed in final output
@@ -180,19 +218,38 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
                 indices[var_name] = spi
 
-                # Enhance metadata for CF-compliance
+                # Enhance metadata for CF-compliance and xclim documentation
                 indices[var_name].attrs['units'] = '1'  # Dimensionless
                 indices[var_name].attrs['long_name'] = f'{window}-Month Standardized Precipitation Index'
-                indices[var_name].attrs['description'] = f'Standardized precipitation index over {window}-month window using gamma distribution (McKee et al. 1993)'
+                indices[var_name].attrs['description'] = f'Standardized precipitation index over {window}-month window using gamma distribution (McKee et al. 1993). Calculated via xclim v0.56+ with automatic zero-inflation handling.'
                 indices[var_name].attrs['calibration_period'] = f'{self.spi_cal_start} to {self.spi_cal_end}'
                 indices[var_name].attrs['distribution'] = 'gamma'
                 indices[var_name].attrs['method'] = 'ML'
+                indices[var_name].attrs['zero_inflated'] = 'True (automatic)'
+                indices[var_name].attrs['value_bounds'] = '±8.21 (xclim implementation)'
                 indices[var_name].attrs['interpretation'] = 'SPI < -2.0: Extreme drought, -1.5 to -1.0: Moderate drought, -1.0 to 1.0: Near normal, > 2.0: Extremely wet'
 
             except Exception as e:
                 logger.error(f"Failed to calculate {var_name}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
+                errors.append((var_name, str(e)))
+
+        # FIX: Validate that at least some SPI indices succeeded
+        if not indices:
+            error_summary = "\n".join([f"  - {name}: {err}" for name, err in errors])
+            raise RuntimeError(
+                f"All SPI calculations failed! No SPI indices were computed.\n"
+                f"This indicates a fundamental data or calibration problem.\n"
+                f"Errors:\n{error_summary}\n"
+                f"Check data quality, calibration period (1981-2010), and ensure precipitation data is valid."
+            )
+
+        if errors:
+            # Some succeeded, some failed - log warning but continue
+            logger.warning(f"Successfully calculated {len(indices)}/5 SPI indices. Failed: {[name for name, _ in errors]}")
+        else:
+            logger.info(f"Successfully calculated all {len(indices)} SPI indices")
 
         return indices
 
@@ -204,13 +261,19 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
             precip_ds: Dataset with precipitation variable (pr)
 
         Returns:
-            Dictionary of calculated dry spell indices (4 indices)
+            Dictionary of calculated dry spell indices (2 indices: cdd, dry_days)
+
+        Raises:
+            ValueError: If 'pr' variable not found
         """
         indices = {}
 
         if 'pr' not in precip_ds:
-            logger.warning("Precipitation variable 'pr' not found, skipping dry spell indices")
-            return indices
+            raise ValueError(
+                "Precipitation variable 'pr' not found in dataset. "
+                f"Available variables: {list(precip_ds.data_vars)}. "
+                "Check preprocessing in _preprocess_datasets()."
+            )
 
         # 1. Maximum Consecutive Dry Days (ETCCDI standard)
         try:
@@ -222,32 +285,21 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
             )
         except Exception as e:
             logger.error(f"Failed to calculate cdd: {e}")
+            raise RuntimeError(f"Critical failure in CDD calculation: {e}") from e
 
         # 2. Dry Spell Frequency - SIMPLIFIED FOR PERFORMANCE
         # Note: Custom implementation removed due to performance issues
         # Using CDD (consecutive dry days) as proxy for now
         # Full implementation requires optimized algorithm
-        try:
-            logger.info("  - Skipping dry spell frequency (performance optimization)...")
-            # Placeholder - will implement optimized version in future
-            pass
-        except Exception as e:
-            logger.error(f"Failed to calculate dry_spell_frequency: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        logger.info("  - Skipping dry spell frequency (performance optimization)...")
+        # Placeholder - will implement optimized version in future
 
         # 3. Dry Spell Total Length - SIMPLIFIED FOR PERFORMANCE
         # Note: Custom implementation removed due to performance issues
         # Using dry_days count as approximation for now
         # Full implementation requires optimized algorithm
-        try:
-            logger.info("  - Skipping dry spell total length (performance optimization)...")
-            # Placeholder - will implement optimized version in future
-            pass
-        except Exception as e:
-            logger.error(f"Failed to calculate dry_spell_total_length: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        logger.info("  - Skipping dry spell total length (performance optimization)...")
+        # Placeholder - will implement optimized version in future
 
         # 4. Dry Days (simple count)
         try:
@@ -259,6 +311,7 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
             )
         except Exception as e:
             logger.error(f"Failed to calculate dry_days: {e}")
+            raise RuntimeError(f"Critical failure in dry_days calculation: {e}") from e
 
         return indices
 
@@ -271,12 +324,18 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
         Returns:
             Dictionary of calculated precipitation intensity indices (3 indices)
+
+        Raises:
+            ValueError: If 'pr' variable or required baseline not found
         """
         indices = {}
 
         if 'pr' not in precip_ds:
-            logger.warning("Precipitation variable 'pr' not found, skipping intensity indices")
-            return indices
+            raise ValueError(
+                "Precipitation variable 'pr' not found in dataset. "
+                f"Available variables: {list(precip_ds.data_vars)}. "
+                "Check preprocessing in _preprocess_datasets()."
+            )
 
         # 1. Simple Daily Intensity Index (ETCCDI standard)
         try:
@@ -288,6 +347,7 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
             )
         except Exception as e:
             logger.error(f"Failed to calculate sdii: {e}")
+            raise RuntimeError(f"Critical failure in SDII calculation: {e}") from e
 
         # 2. Maximum 7-Day Precipitation (manual implementation)
         try:
@@ -307,33 +367,48 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
             })
         except Exception as e:
             logger.error(f"Failed to calculate max_7day_pr_intensity: {e}")
+            raise RuntimeError(f"Critical failure in max_7day_pr_intensity calculation: {e}") from e
 
         # 3. Fraction of Heavy Precipitation (requires baseline percentiles)
-        if 'pr_75p_threshold' in self.baselines:
-            try:
-                logger.info("  - Calculating fraction of heavy precipitation...")
+        if 'pr_75p_threshold' not in self.baselines:
+            raise ValueError(
+                "Required baseline variable 'pr_75p_threshold' not found. "
+                "Please regenerate baseline percentiles with all required variables."
+            )
 
-                # Align baseline coordinates with precipitation data to avoid dimension mismatch
-                pr_75p_aligned = self.baselines['pr_75p_threshold'].reindex_like(
-                    precip_ds.pr,
-                    method='nearest',
-                    tolerance=0.01
+        try:
+            logger.info("  - Calculating fraction of heavy precipitation...")
+
+            # Align baseline coordinates with precipitation data to avoid dimension mismatch
+            pr_75p_aligned = self.baselines['pr_75p_threshold'].reindex_like(
+                precip_ds.pr,
+                method='nearest',
+                tolerance=0.01
+            )
+
+            # Validate alignment didn't introduce excessive NaNs
+            original_nans = self.baselines['pr_75p_threshold'].isnull().sum().item()
+            aligned_nans = pr_75p_aligned.isnull().sum().item()
+
+            if aligned_nans > original_nans * 1.1:  # More than 10% increase
+                logger.warning(
+                    f"Baseline alignment introduced {aligned_nans - original_nans} new NaN values. "
+                    f"Coordinate mismatch may affect fraction_heavy_precip accuracy."
                 )
 
-                indices['fraction_heavy_precip'] = atmos.fraction_over_precip_thresh(
-                    pr=precip_ds.pr,
-                    pr_per=pr_75p_aligned,
-                    freq='YS'
-                )
-                indices['fraction_heavy_precip'].attrs['long_name'] = 'Fraction of Heavy Precipitation'
-                indices['fraction_heavy_precip'].attrs['description'] = 'Fraction of annual precipitation from heavy events (>75th percentile)'
-                indices['fraction_heavy_precip'].attrs['baseline_period'] = '1981-2000'
-            except Exception as e:
-                logger.error(f"Failed to calculate fraction_heavy_precip: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        else:
-            logger.warning("Skipping fraction_heavy_precip (baseline pr_75p_threshold not available)")
+            indices['fraction_heavy_precip'] = atmos.fraction_over_precip_thresh(
+                pr=precip_ds.pr,
+                pr_per=pr_75p_aligned,
+                freq='YS'
+            )
+            indices['fraction_heavy_precip'].attrs['long_name'] = 'Fraction of Heavy Precipitation'
+            indices['fraction_heavy_precip'].attrs['description'] = 'Fraction of annual precipitation from heavy events (>75th percentile)'
+            indices['fraction_heavy_precip'].attrs['baseline_period'] = '1981-2000'
+        except Exception as e:
+            logger.error(f"Failed to calculate fraction_heavy_precip: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"Critical failure in fraction_heavy_precip calculation: {e}") from e
 
         return indices
 
@@ -367,6 +442,7 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
         tile_ds = ds.isel(lat=lat_slice, lon=lon_slice)
 
         # Subset baseline percentiles to match tile (thread-safe)
+        # FIX: Keep entire operation inside lock to prevent race conditions
         with self.baseline_lock:
             tile_baselines_temp = {}
             for key, baseline in self.baselines.items():
@@ -385,41 +461,48 @@ class DroughtPipeline(BasePipeline, SpatialTilingMixin):
 
                 tile_baselines_temp[key] = tile_baseline
 
-        # Temporarily replace baselines with tile-specific versions
-        original_baselines = self.baselines
-        self.baselines = tile_baselines_temp
+            # Temporarily replace baselines with tile-specific versions
+            # NOTE: This is inside the lock to prevent race conditions during parallel tile processing
+            original_baselines = self.baselines
+            self.baselines = tile_baselines_temp
 
-        try:
-            # Calculate SPI indices (uses full calibration period)
-            # Note: SPI indices are now computed immediately inside calculate_spi_indices()
-            spi_indices = self.calculate_spi_indices(tile_ds)
+            try:
+                # Calculate SPI indices (uses full calibration period)
+                # Note: SPI indices are now computed immediately inside calculate_spi_indices()
+                spi_indices = self.calculate_spi_indices(tile_ds)
 
-            # Filter SPI results to target years (if we loaded extended calibration period)
-            if self.target_start_year and self.target_end_year:
-                # Check if we need to filter (extended dataset starts before target)
-                time_vals = tile_ds.time.values
-                if len(time_vals) > 0:
-                    data_start_year = int(str(time_vals[0])[:4])
-                    if data_start_year < self.target_start_year:
-                        logger.info(f"    Filtering SPI to {self.target_start_year}-{self.target_end_year}...")
-                        for key in spi_indices.keys():
-                            # SPI has monthly frequency, filter carefully
-                            try:
-                                spi_indices[key] = spi_indices[key].sel(
-                                    time=slice(f'{self.target_start_year}-01-01', f'{self.target_end_year}-12-31')
-                                )
-                            except Exception as e:
-                                logger.warning(f"Could not filter {key}: {e}")
+                # Filter SPI results to target years (if we loaded extended calibration period)
+                if self.target_start_year and self.target_end_year:
+                    # Check if we need to filter (extended dataset starts before target)
+                    time_vals = tile_ds.time.values
+                    if len(time_vals) > 0:
+                        import pandas as pd
+                        data_start_year = pd.to_datetime(time_vals[0]).year
+                        if data_start_year < self.target_start_year:
+                            logger.info(f"    Filtering SPI to {self.target_start_year}-{self.target_end_year}...")
+                            for key in list(spi_indices.keys()):
+                                # SPI has monthly frequency, filter carefully
+                                try:
+                                    filtered = spi_indices[key].sel(
+                                        time=slice(f'{self.target_start_year}-01-01', f'{self.target_end_year}-12-31')
+                                    )
+                                    # Validate filtering didn't produce empty dataset
+                                    if len(filtered.time) == 0:
+                                        raise ValueError(f"Time filtering resulted in empty dataset for {key}")
+                                    spi_indices[key] = filtered
+                                except Exception as e:
+                                    logger.error(f"Could not filter {key}: {e}")
+                                    raise
 
-            # Calculate other indices (dry spell, intensity) - these use target years only
-            dry_spell_indices = self.calculate_dry_spell_indices(tile_ds)
-            intensity_indices = self.calculate_precip_intensity_indices(tile_ds)
+                # Calculate other indices (dry spell, intensity) - these use target years only
+                dry_spell_indices = self.calculate_dry_spell_indices(tile_ds)
+                intensity_indices = self.calculate_precip_intensity_indices(tile_ds)
 
-            all_indices = {**spi_indices, **dry_spell_indices, **intensity_indices}
+                all_indices = {**spi_indices, **dry_spell_indices, **intensity_indices}
 
-        finally:
-            # Restore original baselines
-            self.baselines = original_baselines
+            finally:
+                # Restore original baselines (still inside lock)
+                self.baselines = original_baselines
 
         return all_indices
 
